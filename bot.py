@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import requests
 from math import radians, cos, sin, asin, sqrt
@@ -15,11 +16,174 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 # ── قاعدة بيانات مؤقتة ──────────────────────────────────────────────────────
-db = {"alarms": {}, "auto": set()}
+db = {
+    "alarms": {},
+    "auto": set(),
+    "surah_cache": {},   # {reciter_key: [{sura_id, name, rec_id}]}
+}
 
-# ── الولايات الـ 48 ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  أسماء السور الـ 114
+# ══════════════════════════════════════════════════════════════════
+SURAH_NAMES = [
+    "الفاتحة", "البقرة", "آل عمران", "النساء", "المائدة",
+    "الأنعام", "الأعراف", "الأنفال", "التوبة", "يونس",
+    "هود", "يوسف", "الرعد", "إبراهيم", "الحجر",
+    "النحل", "الإسراء", "الكهف", "مريم", "طه",
+    "الأنبياء", "الحج", "المؤمنون", "النور", "الفرقان",
+    "الشعراء", "النمل", "القصص", "العنكبوت", "الروم",
+    "لقمان", "السجدة", "الأحزاب", "سبأ", "فاطر",
+    "يس", "الصافات", "ص", "الزمر", "غافر",
+    "فصلت", "الشورى", "الزخرف", "الدخان", "الجاثية",
+    "الأحقاف", "محمد", "الفتح", "الحجرات", "ق",
+    "الذاريات", "الطور", "النجم", "القمر", "الرحمن",
+    "الواقعة", "الحديد", "المجادلة", "الحشر", "الممتحنة",
+    "الصف", "الجمعة", "المنافقون", "التغابن", "الطلاق",
+    "التحريم", "الملك", "القلم", "الحاقة", "المعارج",
+    "نوح", "الجن", "المزمل", "المدثر", "القيامة",
+    "الإنسان", "المرسلات", "النبأ", "النازعات", "عبس",
+    "التكوير", "الانفطار", "المطففين", "الانشقاق", "البروج",
+    "الطارق", "الأعلى", "الغاشية", "الفجر", "البلد",
+    "الشمس", "الليل", "الضحى", "الشرح", "التين",
+    "العلق", "القدر", "البينة", "الزلزلة", "العاديات",
+    "القارعة", "التكاثر", "العصر", "الهمزة", "الفيل",
+    "قريش", "الماعون", "الكوثر", "الكافرون", "النصر",
+    "المسد", "الإخلاص", "الفلق", "الناس",
+]
+
+# ══════════════════════════════════════════════════════════════════
+#  قائمة القراء الجزائريين
+#  source:
+#    "mp3quran"  → server/{num:03d}.mp3
+#    "way2quran" → media.way2quran.com/audios/{slug}/{num:03d}.mp3
+#    "assabile"  → AJAX لجلب IDs + CDN
+# ══════════════════════════════════════════════════════════════════
+ALGERIAN_RECITERS = [
+    {
+        "key": "dabbah",
+        "name": "الشيخ سعيد دباح الجزائري",
+        "riwaya": "حفص عن عاصم",
+        "source": "way2quran",
+        "slug": "said-dabbah",
+        # السور المتاحة عند سعيد دباح (41 سورة)
+        "surahs": [
+            1, 3, 12, 19, 25, 31, 32, 35, 49, 50,
+            53, 55, 56, 63, 64, 65, 67, 69, 76, 78,
+            80, 87, 89, 93, 94, 95, 96, 97, 98, 99,
+            100, 101, 102, 103, 104, 105, 106, 107,
+            108, 109, 110, 111, 112, 113, 114,
+        ],
+    },
+    {
+        "key": "yaseen",
+        "name": "الشيخ ياسين الجزائري",
+        "riwaya": "ورش عن نافع",
+        "source": "mp3quran",
+        "server": "https://server11.mp3quran.net/qari",
+        "surahs": list(range(1, 115)),
+    },
+    {
+        "key": "riad",
+        "name": "الشيخ رياض الجزائري",
+        "riwaya": "حفص عن عاصم + مجوّد",
+        "source": "assabile",
+        "slug": "riad-al-djazairi",
+        "person_id": 488,
+        "collection_id": 531,    # حفص مرتل
+    },
+    {
+        "key": "rachid",
+        "name": "الشيخ رشيد بلعالية",
+        "riwaya": "ورش عن نافع",
+        "source": "assabile",
+        "slug": "rachid-belalia",
+        "person_id": 219,
+        "collection_id": 0,
+    },
+    {
+        "key": "zakaria",
+        "name": "الشيخ زكريا حمامة",
+        "riwaya": "ورش عن نافع",
+        "source": "assabile",
+        "slug": "zakaria-hamama",
+        "person_id": 222,
+        "collection_id": 0,
+    },
+    {
+        "key": "mansour",
+        "name": "الشيخ منصور الوهراني الجزائري",
+        "riwaya": "ورش عن نافع",
+        "source": "assabile",
+        "slug": "mansour-el-wahrani-aljazaery",
+        "person_id": 504,
+        "collection_id": 0,
+    },
+    {
+        "key": "hamza",
+        "name": "الشيخ حمزة الجزائري",
+        "riwaya": "حفص عن عاصم",
+        "source": "way2quran",
+        "slug": "hamza-al-jazairi",
+        "surahs": list(range(1, 115)),
+    },
+    {
+        "key": "youssef",
+        "name": "الشيخ يوسف الجزائري",
+        "riwaya": "ورش عن نافع",
+        "source": "way2quran",
+        "slug": "youssouf-al-jazairi",
+        "surahs": list(range(1, 115)),
+    },
+]
+
+RECITERS_PAGE_SIZE = 5   # قراء في كل صفحة
+SURAHS_PAGE_SIZE  = 20  # سور في كل صفحة
+
+RECITERS_BY_KEY = {r["key"]: r for r in ALGERIAN_RECITERS}
+
+# ── بناء رابط الصوت ─────────────────────────────────────────────────────────
+def build_audio_url(reciter: dict, surah_num: int, assabile_rec_id: str | None = None) -> str:
+    src = reciter["source"]
+    num = surah_num
+    if src == "mp3quran":
+        return f"{reciter['server']}/{num:03d}.mp3"
+    if src == "way2quran":
+        return f"https://media.way2quran.com/audios/{reciter['slug']}/{num:03d}.mp3"
+    if src == "assabile" and assabile_rec_id:
+        slug = reciter["slug"]
+        pid  = reciter["person_id"]
+        return f"https://www.assabile.com/media/mp3/{slug}-{pid}/{assabile_rec_id}.mp3"
+    return ""
+
+# ── جلب قائمة السور من assabile AJAX (مزامن) ─────────────────────────────────
+def fetch_assabile_surahs(reciter: dict) -> list[dict]:
+    """يُرجع قائمة [{sura_id, name, rec_id}] أو [] عند الفشل."""
+    pid = reciter["person_id"]
+    col = reciter["collection_id"]
+    url = f"https://ar.assabile.com/ajax/loadplayer-{pid}-{col}"
+    try:
+        res = requests.get(url, timeout=15).json()
+        surahs = []
+        for item in res.get("Recitation", []):
+            sura_id = int(item.get("sura_id", 0))
+            # اسم السورة من قائمتنا
+            name = SURAH_NAMES[sura_id - 1] if 1 <= sura_id <= 114 else f"سورة {sura_id}"
+            # href مثل "#3446" → "3446"
+            rec_id = item.get("href", "#").lstrip("#")
+            surahs.append({"sura_id": sura_id, "name": name, "rec_id": rec_id})
+        # ترتيب حسب رقم السورة
+        surahs.sort(key=lambda x: x["sura_id"])
+        return surahs
+    except Exception as e:
+        logger.warning(f"assabile AJAX error for {reciter['key']}: {e}")
+        return []
+
+# ══════════════════════════════════════════════════════════════════
+#  الولايات الـ 48
+# ══════════════════════════════════════════════════════════════════
 ALGERIA_STATES = {
     "1- أدرار":          (27.87, -0.29),
     "2- الشلف":          (36.16,  1.33),
@@ -78,19 +242,10 @@ MAIN_KEYBOARD = [
     [KeyboardButton("ℹ️ حول البوت")]
 ]
 
-# ── القراء ──────────────────────────────────────────────────────────────────
-RECITERS = {
-    "1": ("الدوكالي محمد العالم (ورش)",  "Libyan_Al_Doukali_Muhammad_Al_Alim_128kbps"),
-    "2": ("ياسين الجزائري (ورش)",         "Yassine_Al_Djazairi_64kbps"),
-    "3": ("رياض الجزائري (ورش)",          "Riad_Ait_Hama_128kbps"),
-    "4": ("عبد الباسط عبد الصمد",         "Abdul_Basit_Abdul_Samad_128kbps"),
-    "5": ("ماهر المعيقلي",                "MaherMuaiqly128kbps"),
-}
-
 # ── المحتوى اليومي ───────────────────────────────────────────────────────────
 DAILY_CONTENT = {
-    "azkar_sabah":  "☀️ *أذكار الصباح:*\nأصبحنا وأصبح الملك لله والحمد لله..",
-    "azkar_massa":  "🌆 *أذكار المساء:*\nأمسينا وأمسي الملك لله والحمد لله..",
+    "azkar_sabah":   "☀️ *أذكار الصباح:*\nأصبحنا وأصبح الملك لله والحمد لله..",
+    "azkar_massa":   "🌆 *أذكار المساء:*\nأمسينا وأمسي الملك لله والحمد لله..",
     "daily_package": (
         "🌟 *المحتوى اليومي المتجدد:*\n\n"
         "📖 *آية:* ﴿وَمَن يَتَّقِ اللَّهَ يَجْعَل لَّهُ مَخْرَجًا﴾"
@@ -107,11 +262,27 @@ DUA_SADAQA = (
 
 
 # ══════════════════════════════════════════════════════════════════
+#  بداية البوت
+# ══════════════════════════════════════════════════════════════════
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 مرحباً بك في البوت الإسلامي الجزائري.\n\n"
+        "💡 الميزات المتاحة:\n"
+        "• 🕌 مواقيت الصلاة لـ 48 ولاية جزائرية.\n"
+        "• 📢 تفعيل الأذان التلقائي: `/alarm اسم_الولاية`\n"
+        "• 📖 تصفح القرآن والاستماع بصوت قراء جزائريين.\n"
+        "• 📍 إرسال موقعك لمعرفة أقرب مسجد ومحل ومقهى.\n"
+        "• 🕒 إرسال تلقائي للأذكار والمحتوى اليومي: `/auto`\n"
+        "• 🔕 إيقاف جميع التنبيهات: `/stop`",
+        reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
 #  مواقيت الصلاة
 # ══════════════════════════════════════════════════════════════════
-
 def get_prayer_times(lat: float, lon: float) -> dict | None:
-    """جلب مواقيت الصلاة من aladhan.com (مزامن — يُستدعى خارج async)."""
     date = datetime.now().strftime("%d-%m-%Y")
     url = (
         f"https://api.aladhan.com/v1/timings/{date}"
@@ -158,7 +329,6 @@ async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_prayer_alarms(app):
-    """تحقق من مواقيت الأذان وأرسل تنبيهاً عند الموعد."""
     now_str = datetime.now().strftime("%H:%M")
     for chat_id, state in list(db["alarms"].items()):
         lat, lon = ALGERIA_STATES.get(state, (36.75, 3.05))
@@ -184,95 +354,212 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ يرجى كتابة اسم الولاية بعد الأمر. مثال:\n`/alarm 16- الجزائر`",
             parse_mode="Markdown"
         )
-    matched_state = next((s for s in ALGERIA_STATES if state in s), None)
-    if matched_state:
-        db["alarms"][update.effective_chat.id] = matched_state
-        await update.message.reply_text(f"🔔 تم تفعيل تنبيهات الأذان لولاية: {matched_state}")
+    matched = next((s for s in ALGERIA_STATES if state in s), None)
+    if matched:
+        db["alarms"][update.effective_chat.id] = matched
+        await update.message.reply_text(f"🔔 تم تفعيل تنبيهات الأذان لولاية: {matched}")
     else:
-        await update.message.reply_text("❌ لم يتم العثور على الولاية. يرجى كتابتها بشكل صحيح.")
+        await update.message.reply_text("❌ لم يتم العثور على الولاية.")
 
 
 # ══════════════════════════════════════════════════════════════════
-#  القرآن الكريم
+#  قسم القرآن الكريم — القراء الجزائريون
 # ══════════════════════════════════════════════════════════════════
 
+def reciters_keyboard(page: int) -> InlineKeyboardMarkup:
+    """لوحة اختيار القارئ مع ترقيم الصفحات."""
+    start = page * RECITERS_PAGE_SIZE
+    end   = start + RECITERS_PAGE_SIZE
+    chunk = ALGERIAN_RECITERS[start:end]
+
+    rows = []
+    for r in chunk:
+        rows.append([InlineKeyboardButton(
+            f"🎙 {r['name']} ({r['riwaya']})",
+            callback_data=f"reciter|{r['key']}|0"
+        )])
+
+    # أزرار التنقل بين الصفحات
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"reciters_page|{page-1}"))
+    total_pages = (len(ALGERIAN_RECITERS) + RECITERS_PAGE_SIZE - 1) // RECITERS_PAGE_SIZE
+    if end < len(ALGERIAN_RECITERS):
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"reciters_page|{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(
+        f"📄 الصفحة {page+1}/{total_pages}", callback_data="noop"
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+def surahs_keyboard(reciter_key: str, surahs: list, page: int) -> InlineKeyboardMarkup:
+    """لوحة اختيار السورة مع ترقيم الصفحات."""
+    start = page * SURAHS_PAGE_SIZE
+    end   = start + SURAHS_PAGE_SIZE
+    chunk = surahs[start:end]
+
+    rows = []
+    # 2 سورتان في كل صف
+    for i in range(0, len(chunk), 2):
+        row = []
+        for item in chunk[i:i+2]:
+            sura_id = item["sura_id"]
+            name    = item["name"]
+            rec_id  = item.get("rec_id", "")
+            cd      = f"surah|{reciter_key}|{sura_id}|{rec_id}"
+            row.append(InlineKeyboardButton(f"{sura_id}. {name}", callback_data=cd))
+        rows.append(row)
+
+    # أزرار التنقل
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"surahs_page|{reciter_key}|{page-1}"))
+    total_pages = (len(surahs) + SURAHS_PAGE_SIZE - 1) // SURAHS_PAGE_SIZE
+    if end < len(surahs):
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"surahs_page|{reciter_key}|{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(f"📄 الصفحة {page+1}/{total_pages}", callback_data="noop")])
+    rows.append([InlineKeyboardButton("🔙 القائمة الرئيسية للقراء", callback_data="reciters_page|0")])
+    return InlineKeyboardMarkup(rows)
+
+
+def get_reciter_surahs(reciter: dict) -> list[dict]:
+    """يُرجع قائمة السور المتاحة للقارئ (من الكاش أو يجلبها)."""
+    key = reciter["key"]
+    if key in db["surah_cache"]:
+        return db["surah_cache"][key]
+
+    if reciter["source"] == "assabile":
+        surahs = fetch_assabile_surahs(reciter)
+    else:
+        # mp3quran أو way2quran: نبني القائمة من الأرقام المخزّنة
+        surahs = [
+            {"sura_id": n, "name": SURAH_NAMES[n-1], "rec_id": ""}
+            for n in reciter["surahs"]
+        ]
+
+    db["surah_cache"][key] = surahs
+    return surahs
+
+
+# ── عرض قائمة القراء ────────────────────────────────────────────────────────
 async def quran_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 تصفح القرآن الكريم.\n"
-        "أرسل رقم السورة من (1 إلى 114):\n"
-        "مثال: أرسل `1` لعرض سورة الفاتحة.",
+        "📖 *القرآن الكريم بأصوات قراء جزائريين*\n\n"
+        "اختر القارئ للاستماع إلى تلاواته:",
+        reply_markup=reciters_keyboard(0),
         parse_mode="Markdown"
     )
 
 
-async def handle_quran_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text.isdigit() and 1 <= int(text) <= 114:
-        sura_num = int(text)
-        try:
-            res = requests.get(
-                f"https://api.alquran.cloud/v1/surah/{sura_num}",
-                timeout=10
-            ).json()
-        except Exception:
-            return await update.message.reply_text("❌ تعذر الاتصال بخادم القرآن.")
-
-        if res.get("code") == 200:
-            sura_data = res["data"]
-            ayyahs = "\n".join(
-                f"﴿{ay['numberInSurah']}﴾ {ay['text']}"
-                for ay in sura_data["ayahs"]
-            )
-            keyboard = [
-                [InlineKeyboardButton(f"🔊 {v[0]}", callback_data=f"listen|{sura_num}|{k}")]
-                for k, v in RECITERS.items()
-            ]
-            full_text = (
-                f"📖 *سورة {sura_data['name']}* ({sura_data['englishName']})\n\n"
-                f"{ayyahs}"
-            )
-            if len(full_text) > 4000:
-                await update.message.reply_text(full_text[:4000], parse_mode="Markdown")
-                await update.message.reply_text(
-                    full_text[4000:],
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            else:
-                await update.message.reply_text(
-                    full_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="Markdown"
-                )
-        else:
-            await update.message.reply_text("❌ لم يتم العثور على السورة.")
-
-
-async def listen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reciters_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, sura, reciter_id = query.data.split("|")
-    reciter_name, reciter_identifier = RECITERS[reciter_id]
-    audio_url = (
-        f"https://cdn.islamic.network/quran/audio-surah/128/"
-        f"{reciter_identifier}/{sura}.mp3"
+    page = int(query.data.split("|")[1])
+    await query.edit_message_text(
+        "📖 *القرآن الكريم بأصوات قراء جزائريين*\n\nاختر القارئ:",
+        reply_markup=reciters_keyboard(page),
+        parse_mode="Markdown"
     )
-    await query.message.reply_audio(
-        audio=audio_url,
-        title=f"سورة رقم {sura}",
-        performer=reciter_name
+
+
+# ── عرض قائمة السور للقارئ ──────────────────────────────────────────────────
+async def reciter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, reciter_key, page_str = query.data.split("|")
+    page = int(page_str)
+    reciter = RECITERS_BY_KEY.get(reciter_key)
+    if not reciter:
+        await query.answer("❌ قارئ غير معروف", show_alert=True)
+        return
+
+    await query.edit_message_text(
+        f"⏳ جارٍ تحميل قائمة السور بصوت {reciter['name']}...",
+        parse_mode="Markdown"
     )
+
+    surahs = get_reciter_surahs(reciter)
+    if not surahs:
+        await query.edit_message_text(
+            f"❌ تعذر جلب قائمة السور للشيخ {reciter['name']}. حاول مرة أخرى."
+        )
+        return
+
+    await query.edit_message_text(
+        f"📖 *{reciter['name']}*\n"
+        f"📻 الرواية: {reciter['riwaya']}\n"
+        f"📂 {len(surahs)} سورة متاحة\n\n"
+        "اختر السورة للاستماع:",
+        reply_markup=surahs_keyboard(reciter_key, surahs, page),
+        parse_mode="Markdown"
+    )
+
+
+async def surahs_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, reciter_key, page_str = query.data.split("|")
+    page = int(page_str)
+    reciter = RECITERS_BY_KEY.get(reciter_key)
+    surahs  = get_reciter_surahs(reciter)
+
+    await query.edit_message_text(
+        f"📖 *{reciter['name']}* — اختر السورة:",
+        reply_markup=surahs_keyboard(reciter_key, surahs, page),
+        parse_mode="Markdown"
+    )
+
+
+# ── إرسال الملف الصوتي ───────────────────────────────────────────────────────
+async def surah_audio_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🎵 جارٍ تحميل الصوت...")
+    parts = query.data.split("|")          # surah|key|sura_id|rec_id
+    reciter_key = parts[1]
+    sura_id     = int(parts[2])
+    rec_id      = parts[3] if len(parts) > 3 else ""
+    reciter     = RECITERS_BY_KEY.get(reciter_key)
+
+    if not reciter:
+        await query.message.reply_text("❌ قارئ غير معروف.")
+        return
+
+    audio_url = build_audio_url(reciter, sura_id, rec_id or None)
+    surah_name = SURAH_NAMES[sura_id - 1]
+
+    if not audio_url:
+        await query.message.reply_text(
+            f"❌ لا يوجد رابط صوتي لسورة {surah_name} عند هذا القارئ."
+        )
+        return
+
+    try:
+        await query.message.reply_audio(
+            audio=audio_url,
+            title=f"سورة {surah_name}",
+            performer=reciter["name"],
+            caption=f"📖 سورة *{surah_name}* — {reciter['name']}\n📻 {reciter['riwaya']}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Audio send error ({reciter_key} / {sura_id}): {e}")
+        await query.message.reply_text(
+            f"❌ تعذر إرسال الملف الصوتي لسورة {surah_name}.\n"
+            f"يمكنك الاستماع مباشرة من الرابط:\n{audio_url}"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════
 #  أقرب مسجد / حلال / مقهى
 # ══════════════════════════════════════════════════════════════════
-
 async def find_nearby_places(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc = update.message.location
     lat, lon = loc.latitude, loc.longitude
-    await update.message.reply_text(
-        "🔄 جاري البحث عن أقرب المساجد والمحلات الحلال والمقاهي..."
-    )
+    await update.message.reply_text("🔄 جارٍ البحث عن أقرب المساجد والمحلات الحلال والمقاهي...")
     overpass_query = f"""
     [out:json][timeout:25];
     (
@@ -286,30 +573,26 @@ async def find_nearby_places(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         res = requests.post(
             "https://overpass-api.de/api/interpreter",
-            data={"data": overpass_query},
-            timeout=30
+            data={"data": overpass_query}, timeout=30
         ).json()
         elements = res.get("elements", [])
         if not elements:
-            return await update.message.reply_text(
-                "📍 لم نتمكن من العثور على مرافق قريبة في هذا النطاق."
-            )
-        response_text = "📍 *النتائج القريبة منك (تفتح مباشرة على الخريطة):*\n\n"
+            return await update.message.reply_text("📍 لم نتمكن من العثور على مرافق قريبة.")
+        response_text = "📍 *النتائج القريبة منك:*\n\n"
         for idx, el in enumerate(elements, 1):
-            tags = el.get("tags", {})
-            name = tags.get("name", "مرفق غير مسمى")
-            amenity = tags.get("amenity", tags.get("shop", "محل تجاري"))
-            icon = "🕌" if amenity == "place_of_worship" else ("☕" if amenity == "cafe" else "🥩")
+            tags     = el.get("tags", {})
+            name     = tags.get("name", "مرفق غير مسمى")
+            amenity  = tags.get("amenity", tags.get("shop", "محل"))
+            icon     = "🕌" if amenity == "place_of_worship" else ("☕" if amenity == "cafe" else "🥩")
             p_lat, p_lon = el["lat"], el["lon"]
             map_link = f"https://www.google.com/maps?q={p_lat},{p_lon}"
             lon1, lat1, lon2, lat2 = map(radians, [lon, lat, p_lon, p_lat])
             dist = 2 * 6371 * asin(
-                sqrt(sin((lat2 - lat1) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2)
+                sqrt(sin((lat2-lat1)/2)**2 + cos(lat1)*cos(lat2)*sin((lon2-lon1)/2)**2)
             )
             response_text += (
                 f"{idx}. {icon} *{name}*\n"
-                f"📏 المسافة: {dist:.2f} كم\n"
-                f"🔗 [رابط الخريطة]({map_link})\n\n"
+                f"📏 {dist:.2f} كم — 🔗 [افتح على الخريطة]({map_link})\n\n"
             )
         await update.message.reply_text(
             response_text, parse_mode="Markdown", disable_web_page_preview=True
@@ -321,7 +604,6 @@ async def find_nearby_places(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ══════════════════════════════════════════════════════════════════
 #  الإرسال التلقائي والمحتوى اليومي
 # ══════════════════════════════════════════════════════════════════
-
 async def start_auto_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db["auto"].add(update.effective_chat.id)
     await update.message.reply_text("🕒 تم تفعيل الإرسال التلقائي بنجاح!")
@@ -367,28 +649,13 @@ async def send_dua_sadaqa(app):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  معلومات البوت
+#  حول البوت
 # ══════════════════════════════════════════════════════════════════
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 مرحباً بك في البوت الإسلامي الجزائري.\n\n"
-        "💡 الميزات المتاحة:\n"
-        "• 🕌 مواقيت الصلاة لـ 48 ولاية جزائرية.\n"
-        "• 📢 تفعيل الأذان التلقائي: `/alarm اسم_الولاية`\n"
-        "• 📖 تصفح القرآن والاستماع (ورش وقراء جزائريون).\n"
-        "• 📍 إرسال موقعك لمعرفة أقرب مسجد ومحل ومقهى.\n"
-        "• 🕒 إرسال تلقائي للأذكار والمحتوى اليومي: `/auto`\n"
-        "• 🔕 إيقاف جميع التنبيهات: `/stop`",
-        reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
-        parse_mode="Markdown"
-    )
-
-
 async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ℹ️ *حول البوت الإسلامي الجزائري* 🇩🇿\n\n"
-        "بوت متكامل يخدم المسلمين الجزائريين بمواقيت الصلاة والقرآن والأذكار اليومية.",
+        "بوت متكامل يخدم المسلمين الجزائريين بمواقيت الصلاة\n"
+        "والقرآن الكريم بأصوات قراء جزائريين والأذكار اليومية.",
         parse_mode="Markdown"
     )
 
@@ -396,7 +663,6 @@ async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════════
 #  نقطة الانطلاق
 # ══════════════════════════════════════════════════════════════════
-
 def main():
     if not TOKEN:
         raise RuntimeError("يرجى ضبط TELEGRAM_BOT_TOKEN في متغيرات البيئة")
@@ -405,11 +671,11 @@ def main():
 
     # ── الجدولة ──────────────────────────────────────────────────
     scheduler = AsyncIOScheduler(timezone="Africa/Algiers")
-    scheduler.add_job(check_prayer_alarms,  "interval", minutes=1,                    args=[app])
-    scheduler.add_job(send_sabah_content,   CronTrigger(hour=6,  minute=0),           args=[app])
-    scheduler.add_job(send_daily_package,   CronTrigger(hour=8,  minute=0),           args=[app])
-    scheduler.add_job(send_massa_content,   CronTrigger(hour=17, minute=0),           args=[app])
-    scheduler.add_job(send_dua_sadaqa,      CronTrigger(hour=21, minute=0),           args=[app])
+    scheduler.add_job(check_prayer_alarms, "interval", minutes=1,          args=[app])
+    scheduler.add_job(send_sabah_content,  CronTrigger(hour=6,  minute=0), args=[app])
+    scheduler.add_job(send_daily_package,  CronTrigger(hour=8,  minute=0), args=[app])
+    scheduler.add_job(send_massa_content,  CronTrigger(hour=17, minute=0), args=[app])
+    scheduler.add_job(send_dua_sadaqa,     CronTrigger(hour=21, minute=0), args=[app])
     scheduler.start()
 
     # ── الأوامر ───────────────────────────────────────────────────
@@ -419,15 +685,18 @@ def main():
     app.add_handler(CommandHandler("stop",  stop_all_services))
 
     # ── الرسائل النصية ────────────────────────────────────────────
-    app.add_handler(MessageHandler(filters.Text(["🕌 مواقيت الصلاة"]),   prayer_menu))
+    app.add_handler(MessageHandler(filters.Text(["🕌 مواقيت الصلاة"]),       prayer_menu))
     app.add_handler(MessageHandler(filters.Text(["📖 تصفح القرآن الكريم"]), quran_menu))
-    app.add_handler(MessageHandler(filters.Text(["ℹ️ حول البوت"]),        about_bot))
-    app.add_handler(MessageHandler(filters.LOCATION,                       find_nearby_places))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,        handle_quran_request))
+    app.add_handler(MessageHandler(filters.Text(["ℹ️ حول البوت"]),           about_bot))
+    app.add_handler(MessageHandler(filters.LOCATION,                          find_nearby_places))
 
     # ── الأزرار التفاعلية ─────────────────────────────────────────
-    app.add_handler(CallbackQueryHandler(prayer_callback, pattern=r"^pray\|"))
-    app.add_handler(CallbackQueryHandler(listen_callback, pattern=r"^listen\|"))
+    app.add_handler(CallbackQueryHandler(prayer_callback,       pattern=r"^pray\|"))
+    app.add_handler(CallbackQueryHandler(reciters_page_callback, pattern=r"^reciters_page\|"))
+    app.add_handler(CallbackQueryHandler(reciter_callback,       pattern=r"^reciter\|"))
+    app.add_handler(CallbackQueryHandler(surahs_page_callback,   pattern=r"^surahs_page\|"))
+    app.add_handler(CallbackQueryHandler(surah_audio_callback,   pattern=r"^surah\|"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern=r"^noop$"))
 
     app.run_polling()
 
