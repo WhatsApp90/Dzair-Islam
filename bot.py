@@ -210,11 +210,9 @@ def get_prayer_times(lat: float, lng: float) -> dict:
         logger.error(f"خطأ في جلب المواقيت: {e}")
         return {}
 
-
 def get_quran_audio_url(surah_num: int, reciter_url: str) -> str:
     """يبني رابط ملف صوتي للسورة من mp3quran."""
     return f"{reciter_url}/{str(surah_num).zfill(3)}.mp3"
-
 
 def get_quran_text(surah_num: int) -> str:
     """يجلب نص السورة من AlQuran Cloud API."""
@@ -232,7 +230,6 @@ def get_quran_text(surah_num: int) -> str:
         logger.error(f"خطأ في جلب نص السورة: {e}")
         return "تعذر جلب النص حاليا."
 
-
 def get_daily_content() -> str:
     """يختار آية وحديث وحكمة بناءً على يوم السنة."""
     day_of_year = datetime.now().timetuple().tm_yday
@@ -245,7 +242,6 @@ def get_daily_content() -> str:
         f"📜 حديث اليوم:\n{hadith}\n\n"
         f"💡 حكمة اليوم:\n{hikma}"
     )
-
 
 def find_nearby_mosques(lat: float, lng: float) -> list:
     """يبحث عن أقرب المساجد عبر Overpass API (OpenStreetMap)."""
@@ -279,7 +275,6 @@ def find_nearby_mosques(lat: float, lng: float) -> list:
     except Exception as e:
         logger.error(f"خطأ في البحث عن المساجد: {e}")
         return []
-
 
 def find_nearby_halal(lat: float, lng: float) -> list:
     """يبحث عن مطاعم حلال ومحلات ومقاهي قريبة."""
@@ -319,8 +314,6 @@ def find_nearby_halal(lat: float, lng: float) -> list:
     except Exception as e:
         logger.error(f"خطأ في البحث عن محلات الحلال: {e}")
         return []
-
-
 # ============================================================
 # واجهة المستخدم - لوحة المفاتيح الرئيسية
 # (بدون زر الأذكار وبدون زر المحتوى اليومي)
@@ -332,7 +325,6 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-
 def wilaya_keyboard() -> InlineKeyboardMarkup:
     """لوحة اختيار الولاية (مقسّمة على صفوف)."""
     wilayas = sorted(ALGERIA_WILAYAS.keys())
@@ -342,13 +334,11 @@ def wilaya_keyboard() -> InlineKeyboardMarkup:
     rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     return InlineKeyboardMarkup(rows)
 
-
 def quran_reciters_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for name, url in QURAN_RECITERS.items():
         rows.append([InlineKeyboardButton(name, callback_data=f"reciter:{url}")])
     return InlineKeyboardMarkup(rows)
-
 
 def surahs_keyboard() -> InlineKeyboardMarkup:
     """لوحة السور - مقسّمة على صفوف."""
@@ -357,7 +347,6 @@ def surahs_keyboard() -> InlineKeyboardMarkup:
         buttons.append(InlineKeyboardButton(f"{num}. {name}", callback_data=f"surah:{num}"))
     rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
     return InlineKeyboardMarkup(rows)
-
 
 # ============================================================
 # الأوامر
@@ -375,14 +364,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=main_keyboard(),
     )
 
-
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "اختر أحد الأزرار في القائمة الرئيسية.\n"
         "للبحث الجغرافي أرسل موقعك (location).",
         reply_markup=main_keyboard(),
     )
-
 
 # ============================================================
 # معالج الرسائل النصية
@@ -419,7 +406,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "اختر من القائمة:", reply_markup=main_keyboard()
         )
 
-
 # ============================================================
 # معالج الموقع الجغرافي
 # ============================================================
@@ -451,7 +437,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         msg += "لم يتم العثور على محلات قريبة."
 
     await update.message.reply_text(msg, disable_web_page_preview=True)
-
 
 # ============================================================
 # معالج أزرار الرد (Callback)
@@ -497,4 +482,154 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         audio_url = get_quran_audio_url(surah_num, reciter_url)
         text = get_quran_text(surah_num)
         msg = f"📖 سورة {surah_name}\n\n{text}\n\n🎧 استماع:\n{audio_url}"
-        await quer
+        await query.message.reply_text(msg, disable_web_page_preview=True)
+
+# ============================================================
+# الإرسال التلقائي للمحتوى اليومي والأذكار (دون أزرار)
+# ============================================================
+async def daily_content_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يرسل المحتوى اليومي (آية + حديث + حكمة) تلقائيا كل صباح."""
+    job = context.job
+    await context.bot.send_message(
+        job.chat_id,
+        get_daily_content(),
+    )
+
+async def adhkar_sabah_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يرسل أذكار الصباح تلقائيا."""
+    job = context.job
+    msg = "☀️ أذكار الصباح\n\n" + "\n\n".join(
+        f"{i+1}. {t}" for i, t in enumerate(ADHKAR_SABAH)
+    )
+    await context.bot.send_message(job.chat_id, msg)
+
+async def adhkar_masaa_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يرسل أذكار المساء تلقائيا."""
+    job = context.job
+    msg = "🌙 أذكار المساء\n\n" + "\n\n".join(
+        f"{i+1}. {t}" for i, t in enumerate(ADHKAR_MASAA)
+    )
+    await context.bot.send_message(job.chat_id, msg)
+
+async def auto_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يفعّل الإرسال التلقائي للمحتوى اليومي والأذكار لهذا المستخدم."""
+    chat_id = update.effective_chat.id
+
+    # المحتوى يوميا الساعة 8:00 صباحا (توقيت الجزائر UTC+1)
+    context.job_queue.run_daily(
+        daily_content_job,
+        time=dt_time(hour=8, minute=0),
+        days=(0, 1, 2, 3, 4, 5, 6),
+        chat_id=chat_id,
+        name=f"daily_{chat_id}",
+    )
+    # أذكار الصباح الساعة 6:00
+    context.job_queue.run_daily(
+        adhkar_sabah_job,
+        time=dt_time(hour=6, minute=0),
+        days=(0, 1, 2, 3, 4, 5, 6),
+        chat_id=chat_id,
+        name=f"sabah_{chat_id}",
+    )
+    # أذكار المساء الساعة 17:00
+    context.job_queue.run_daily(
+        adhkar_masaa_job,
+        time=dt_time(hour=17, minute=0),
+        days=(0, 1, 2, 3, 4, 5, 6),
+        chat_id=chat_id,
+        name=f"masaa_{chat_id}",
+    )
+
+    await update.message.reply_text(
+        "✅ تم تفعيل الإرسال التلقائي لك:\n"
+        "• أذكار الصباح - يوميا الساعة 6:00\n"
+        "• المحتوى اليومي (آية + حديث + حكمة) - يوميا الساعة 8:00\n"
+        "• أذكار المساء - يوميا الساعة 17:00\n\n"
+        "ستصلك الرسائل تلقائيا في أوقاتها دون أي زر."
+    )
+
+async def stop_auto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يوقف الإرسال التلقائي."""
+    chat_id = update.effective_chat.id
+    for suffix in ("daily", "sabah", "masaa"):
+        for j in context.job_queue.get_jobs_by_name(f"{suffix}_{chat_id}"):
+            j.schedule_removal()
+    await update.message.reply_text("تم إيقاف الإرسال التلقائي.")
+
+# ============================================================
+# التنبيه التلقائي بالأذان
+# ============================================================
+async def alarm_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    wilaya = job.data["wilaya"]
+    coords = ALGERIA_WILAYAS.get(wilaya)
+    if not coords:
+        return
+    lat, lng = coords
+    timings = get_prayer_times(lat, lng)
+    if not timings:
+        return
+    now = datetime.now().strftime("%H:%M")
+    for name, time in timings.items():
+        clean_time = time.split(" ")[0]
+        if clean_time == now:
+            await context.bot.send_message(
+                job.chat_id,
+                f"🔔 حان الآن وقت صلاة {name} في {wilaya}.\n"
+                f"حي على الصلاة، حي على الفلاح. 🕌",
+            )
+
+async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text(
+            "الاستخدام: /alarm <اسم الولاية>\nمثال: /alarm الجزائر العاصمة"
+        )
+        return
+    wilaya = " ".join(context.args)
+    if wilaya not in ALGERIA_WILAYAS:
+        await update.message.reply_text("الولاية غير معروفة. تحقق من الاسم.")
+        return
+    context.job_queue.run_repeating(
+        alarm_job,
+        interval=60,
+        first=1,
+        data={"wilaya": wilaya},
+        chat_id=update.effective_chat.id,
+        name=f"alarm_{update.effective_chat.id}",
+    )
+    await update.message.reply_text(
+        f"✅ تم تفعيل التنبيه التلقائي بالأذان لولاية {wilaya}. "
+        "سيصلك تذكير عند دخول كل صلاة بإذن الله."
+    )
+
+async def stop_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    current = context.job_queue.get_jobs_by_name(f"alarm_{update.effective_chat.id}")
+    for j in current:
+        j.schedule_removal()
+    await update.message.reply_text("تم إيقاف التنبيه التلقائي.")
+
+# ============================================================
+# نقطة الدخول
+# ============================================================
+def main() -> None:
+    if BOT_TOKEN == "PUT_YOUR_TOKEN_HERE":
+        raise RuntimeError("يرجى ضبط BOT_TOKEN في متغيرات البيئة.")
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("auto", auto_subscribe))
+    app.add_handler(CommandHandler("stop", stop_auto))
+    app.add_handler(CommandHandler("alarm", set_alarm))
+    app.add_handler(CommandHandler("stopalarm", stop_alarm))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    logger.info("بدء تشغيل البوت الإسلامي الجزائري...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
+    
