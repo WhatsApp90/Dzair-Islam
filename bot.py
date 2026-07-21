@@ -190,34 +190,41 @@ async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ *حول البوت الإسلامي الجزائري* 🇩🇿\n\nبوت متكامل لخدمتك وصُمم خصيصاً للمستخدم الجزائري.", parse_mode="Markdown")
 
 def main():
+    from telegram.ext import Updater
+    
     if not TOKEN:
         raise RuntimeError("يرجى ضبط الـ TELEGRAM_BOT_TOKEN في متغيرات البيئة")
     
-    app = Application.builder().token(TOKEN).build()
-    scheduler = AsyncIOScheduler(timezone="Africa/Algiers")
+    # البناء المتوافق مع الإصدار الحالي المثبت في السيرفر
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
     
-    scheduler.add_job(check_prayer_alarms, 'interval', minutes=1, args=[app])
-    scheduler.add_job(send_sabah_content, CronTrigger(hour=6, minute=0), args=[app])
-    scheduler.add_job(send_daily_package, CronTrigger(hour=8, minute=0), args=[app])
-    scheduler.add_job(send_massa_content, CronTrigger(hour=17, minute=0), args=[app])
+    # إعداد نظام الجدولة الزمني
+    scheduler = AsyncIOScheduler(timezone="Africa/Algiers")
+    scheduler.add_job(check_prayer_alarms, 'interval', minutes=1, args=[dp])
+    scheduler.add_job(send_sabah_content, CronTrigger(hour=6, minute=0), args=[dp.bot])
+    scheduler.add_job(send_daily_package, CronTrigger(hour=8, minute=0), args=[dp.bot])
+    scheduler.add_job(send_massa_content, CronTrigger(hour=17, minute=0), args=[dp.bot])
     scheduler.start()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("alarm", set_alarm))
-    app.add_handler(CommandHandler("auto", start_auto_broadcast))
-    app.add_handler(CommandHandler("stop", stop_all_services))
+    # تسجيل متحكمات الأوامر والأزرار بالطريقة المتوافقة
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("alarm", set_alarm))
+    dp.add_handler(CommandHandler("auto", start_auto_broadcast))
+    dp.add_handler(CommandHandler("stop", stop_all_services))
     
-    app.add_handler(MessageHandler(filters.Text("🕌 مواقيت الصلاة"), prayer_menu))
-    app.add_handler(MessageHandler(filters.Text("📖 تصفح القرآن الكريم"), quran_menu))
-    app.add_handler(MessageHandler(filters.LOCATION, find_nearby_places))
-    app.add_handler(MessageHandler(filters.Text("ℹ️ حول البوت"), about_bot))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quran_request))
+    dp.add_handler(MessageHandler(filters.Text("🕌 مواقيت الصلاة"), prayer_menu))
+    dp.add_handler(MessageHandler(filters.Text("📖 تصفح القرآن الكريم"), quran_menu))
+    dp.add_handler(MessageHandler(filters.LOCATION, find_nearby_places))
+    dp.add_handler(MessageHandler(filters.Text("ℹ️ حول البوت"), about_bot))
+    dp.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quran_request))
     
-    app.add_handler(CallbackQueryHandler(prayer_callback, pattern="^pray_"))
-    app.add_handler(CallbackQueryHandler(listen_callback, pattern="^listen_"))
+    dp.add_handler(CallbackQueryHandler(prayer_callback, pattern="^pray_"))
+    dp.add_handler(CallbackQueryHandler(listen_callback, pattern="^listen_"))
 
-    app.run_polling()
+    # بدء استقبال الرسائل
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
-    
