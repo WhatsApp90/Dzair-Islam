@@ -187,7 +187,7 @@ async def send_massa_content(context: ContextTypes.DEFAULT_TYPE):
         try: await context.bot.send_message(chat_id, DAILY_CONTENT["azkar_massa"], parse_mode="Markdown")
         except: pass
 async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ℹ️ *حول البوت الإسلامي الجزائري* 🇩🇿\n\nبوت متكامل لخدمتك وصُمم خصيصاً للمستخدم الجزائري.", parse_mode="Markdown")
+        await update.message.reply_text("ℹ️ *حول البوت الإسلامي الجزائري* 🇩🇿\n\nبوت متكامل لخدمتك وصُمم خصيصاً للمستخدم الجزائري.", parse_mode="Markdown")
 
 def main():
     if not TOKEN:
