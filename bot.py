@@ -20,13 +20,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── قاعدة بيانات مؤقتة ──────────────────────────────────────────────────────
+# ── ملف الحفظ الدائم ─────────────────────────────────────────────────────────
+DB_FILE = "data.json"
+
+def load_db() -> dict:
+    """تحميل البيانات من الملف عند بدء التشغيل."""
+    default = {
+        "alarms":      {},
+        "auto":        [],
+        "quiz":        [],
+        "quiz_scores": {},
+        "surah_cache": {},
+    }
+    if not os.path.exists(DB_FILE):
+        return default
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # تحويل المفاتيح الرقمية من string إلى int
+        data["alarms"]      = {int(k): v for k, v in data.get("alarms", {}).items()}
+        data["quiz_scores"] = {int(k): v for k, v in data.get("quiz_scores", {}).items()}
+        data["auto"]        = data.get("auto", [])
+        data["quiz"]        = data.get("quiz", [])
+        data["surah_cache"] = data.get("surah_cache", {})
+        return data
+    except Exception as e:
+        logger.error(f"خطأ في تحميل البيانات: {e}")
+        return default
+
+def save_db():
+    """حفظ البيانات في الملف (بدون surah_cache لأنها مؤقتة)."""
+    try:
+        data = {
+            "alarms":      db["alarms"],
+            "auto":        list(db["auto"]),
+            "quiz":        list(db["quiz"]),
+            "quiz_scores": db["quiz_scores"],
+        }
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"خطأ في حفظ البيانات: {e}")
+
+# ── تحميل البيانات وتحويل القوائم إلى sets ───────────────────────────────────
+_raw = load_db()
 db = {
-    "alarms":      {},
-    "auto":        set(),
-    "quiz":        set(),    # كل من بدأ محادثة (تلقائي)
-    "quiz_scores": {},       # {chat_id: {"name": str, "correct": int, "total": int}}
-    "surah_cache": {},       # {reciter_key: [{sura_id, name, rec_id}]}
+    "alarms":      _raw["alarms"],
+    "auto":        set(_raw["auto"]),
+    "quiz":        set(_raw["quiz"]),
+    "quiz_scores": _raw["quiz_scores"],
+    "surah_cache": {},       # {reciter_key: [{sura_id, name, rec_id}]} — مؤقتة فقط
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -446,6 +489,7 @@ def _register_quiz_user(user, chat_id: int):
             "correct": 0,
             "total":   0,
         }
+        save_db()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -461,12 +505,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 تصفح القرآن واسمع بصوت قراء دزايريين\n"
         "📍 ارسل موقعك باش تعرف أقرب مسجد ومحل حلال\n"
         "🧠 مسابقة إسلامية كل ساعتين — *مسجّل تلقائياً* ✅\n"
-        "🏆 قايمة الأوائل تنضرب كل خميس ليلاً\n"
+        "🏆 لوحة الأوائل كل خميس ليلاً — المتصدّر يحظى بتكريم خاص 🎖\n"
         "🕒 أذكار الصباح والمساء والمحتوى اليومي\n\n"
         "🔧 *الأوامر المتاحة:*\n"
         "• `/alarm اسم_الولاية` — تفعيل تنبيه الأذان\n"
         "• `/auto` — تفعيل الأذكار والمحتوى اليومي\n"
-        "• `/quiz` — شوف قايمة الأوائل الحالية\n"
+        "• `/quiz` — شوف لوحة الأوائل\n"
         "• `/stop` — إيقاف التنبيهات (المسابقة تبقى)\n\n"
         "يرحم والديك 🤲 — حظّ سعيد في المسابقة! 🏅",
         reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
@@ -552,6 +596,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matched = next((s for s in ALGERIA_STATES if state in s), None)
     if matched:
         db["alarms"][update.effective_chat.id] = matched
+        save_db()
         await update.message.reply_text(f"🔔 تم تفعيل تنبيهات الأذان لولاية: {matched}")
     else:
         await update.message.reply_text("❌ لم يتم العثور على الولاية.")
@@ -807,6 +852,7 @@ async def find_nearby_places(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ══════════════════════════════════════════════════════════════════
 async def start_auto_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db["auto"].add(update.effective_chat.id)
+    save_db()
     await update.message.reply_text("🕒 تم تفعيل الإرسال التلقائي بنجاح!")
 
 
@@ -814,6 +860,7 @@ async def stop_all_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     db["alarms"].pop(chat_id, None)
     db["auto"].discard(chat_id)
+    save_db()
     await update.message.reply_text("🔕 تم إيقاف كافة التنبيهات.")
 
 
@@ -852,23 +899,29 @@ async def send_dua_sadaqa(app):
 # ══════════════════════════════════════════════════════════════════
 #  المسابقة الإسلامية
 # ══════════════════════════════════════════════════════════════════
-async def toggle_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /quiz — اشتراك أو إلغاء اشتراك في المسابقة."""
-    chat_id = update.effective_chat.id
-    if chat_id in db["quiz"]:
-        db["quiz"].discard(chat_id)
-        await update.message.reply_text(
-            "🔕 ولّيت ما تجيك المسابقة. إذا حبيت ترجع اكتب `/quiz`",
-            parse_mode="Markdown"
+def build_leaderboard_text() -> str:
+    """بناء نص لوحة الأوائل."""
+    scores = db["quiz_scores"]
+    if not scores:
+        return "🏆 لوحة الأوائل فارغة بعد — حل بعض الأسئلة وارجع!"
+
+    ranked = sorted(scores.values(), key=lambda x: x["correct"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["🏆 *لوحة أوائل المسابقة الإسلامية الدزايرية* 🇩🇿\n"]
+    for i, entry in enumerate(ranked[:10]):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        total = entry["total"] or 1
+        pct   = int(entry["correct"] / total * 100)
+        lines.append(
+            f"{medal} *{entry['name']}* — {entry['correct']} صح / {entry['total']} سؤال ({pct}%)"
         )
-    else:
-        db["quiz"].add(chat_id)
-        await update.message.reply_text(
-            "✅ تسجّلت في المسابقة الإسلامية! 🎉\n"
-            "راح تجيك أسئلة كل ساعتين بالدارجة الدزايرية.\n"
-            "باش توقّف اكتب `/quiz` مرة أخرى.",
-            parse_mode="Markdown"
-        )
+    return "\n".join(lines)
+
+
+async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /quiz — عرض لوحة الأوائل (المسابقة إجبارية للكل)."""
+    text = build_leaderboard_text()
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def quiz_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -918,7 +971,7 @@ def _quiz_keyboard(q: dict) -> InlineKeyboardMarkup:
 
 
 async def quiz_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    query   = update.callback_query
     _, q_id_str, chosen_str = query.data.split("|")
     q = QUIZ_BY_ID.get(int(q_id_str))
     if not q:
@@ -926,7 +979,19 @@ async def quiz_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     chosen  = int(chosen_str)
     correct = q["ans"]
+    chat_id = query.message.chat_id
+    user    = query.from_user
+
+    # ── تحديث النقاط ────────────────────────────────────────────────
+    if chat_id not in db["quiz_scores"]:
+        db["quiz_scores"][chat_id] = {
+            "name":    (user.first_name or "مجهول")[:30],
+            "correct": 0,
+            "total":   0,
+        }
+    db["quiz_scores"][chat_id]["total"] += 1
     if chosen == correct:
+        db["quiz_scores"][chat_id]["correct"] += 1
         msg = f"✅ صحّ! إجابتك صحيحة 🎉\n\n📝 {q['expl']}"
     else:
         msg = (
@@ -934,7 +999,44 @@ async def quiz_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"الجواب الصحيح هو: *{q['opts'][correct]}*\n\n"
             f"📝 {q['expl']}"
         )
+    save_db()
     await query.answer(msg, show_alert=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  لوحة الأوائل الأسبوعية — كل خميس
+# ══════════════════════════════════════════════════════════════════
+async def send_weekly_leaderboard(app):
+    """يُرسل لوحة الأوائل كل خميس ليلاً لجميع المشتركين."""
+    scores = db["quiz_scores"]
+    if not scores:
+        return
+
+    ranked = sorted(scores.values(), key=lambda x: x["correct"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    lines  = ["🏆 *لوحة أوائل المسابقة الإسلامية — نتائج هذا الأسبوع* 🇩🇿\n"]
+    for i, entry in enumerate(ranked[:10]):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        total = entry["total"] or 1
+        pct   = int(entry["correct"] / total * 100)
+        lines.append(
+            f"{medal} *{entry['name']}* — {entry['correct']} صح / {entry['total']} سؤال ({pct}%)"
+        )
+
+    # تكريم المتصدّر
+    winner = ranked[0]
+    lines.append(
+        f"\n🎖 *مبروك للمتصدّر {winner['name']}!* 🎉\n"
+        "أنت نجم المسابقة هذا الأسبوع، بارك الله فيك وزادك علماً 🌟"
+    )
+    text = "\n".join(lines)
+
+    recipients = db["auto"] | db["quiz"]
+    for chat_id in list(recipients):
+        try:
+            await app.bot.send_message(chat_id, text, parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -960,19 +1062,21 @@ def main():
 
     # ── الجدولة ──────────────────────────────────────────────────
     scheduler = AsyncIOScheduler(timezone="Africa/Algiers")
-    scheduler.add_job(check_prayer_alarms, "interval", minutes=1,          args=[app])
-    scheduler.add_job(send_sabah_content,  CronTrigger(hour=6,  minute=0), args=[app])
-    scheduler.add_job(send_daily_package,  CronTrigger(hour=8,  minute=0), args=[app])
-    scheduler.add_job(send_massa_content,  CronTrigger(hour=17, minute=0), args=[app])
-    scheduler.add_job(send_dua_sadaqa,     CronTrigger(hour=21, minute=0), args=[app])
-    scheduler.add_job(send_quiz,           "interval", hours=2,            args=[app])
+    scheduler.add_job(check_prayer_alarms,     "interval", minutes=1,                              args=[app])
+    scheduler.add_job(send_sabah_content,      CronTrigger(hour=6,  minute=0),                    args=[app])
+    scheduler.add_job(send_daily_package,      CronTrigger(hour=8,  minute=0),                    args=[app])
+    scheduler.add_job(send_massa_content,      CronTrigger(hour=17, minute=0),                    args=[app])
+    scheduler.add_job(send_dua_sadaqa,         CronTrigger(hour=21, minute=0),                    args=[app])
+    scheduler.add_job(send_quiz,               "interval", hours=2,                               args=[app])
+    # لوحة الأوائل كل خميس الساعة 21:00
+    scheduler.add_job(send_weekly_leaderboard, CronTrigger(day_of_week="thu", hour=21, minute=0), args=[app])
     scheduler.start()
 
     # ── الأوامر ───────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alarm", set_alarm))
     app.add_handler(CommandHandler("auto",  start_auto_broadcast))
-    app.add_handler(CommandHandler("quiz",  toggle_quiz))
+    app.add_handler(CommandHandler("quiz",  show_leaderboard))
     app.add_handler(CommandHandler("stop",  stop_all_services))
 
     # ── الرسائل النصية ────────────────────────────────────────────
