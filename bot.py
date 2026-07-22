@@ -1,7 +1,9 @@
 import os
 import json
 import logging
+import random
 import requests
+from urllib.parse import quote
 from math import radians, cos, sin, asin, sqrt
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton
@@ -20,9 +22,11 @@ logger = logging.getLogger(__name__)
 
 # ── قاعدة بيانات مؤقتة ──────────────────────────────────────────────────────
 db = {
-    "alarms": {},
-    "auto": set(),
-    "surah_cache": {},   # {reciter_key: [{sura_id, name, rec_id}]}
+    "alarms":      {},
+    "auto":        set(),
+    "quiz":        set(),    # كل من بدأ محادثة (تلقائي)
+    "quiz_scores": {},       # {chat_id: {"name": str, "correct": int, "total": int}}
+    "surah_cache": {},       # {reciter_key: [{sura_id, name, rec_id}]}
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -61,21 +65,38 @@ SURAH_NAMES = [
 #    "way2quran" → media.way2quran.com/audios/{slug}/{num:03d}.mp3
 #    "assabile"  → AJAX لجلب IDs + CDN
 # ══════════════════════════════════════════════════════════════════
+# ── ملفات سعيد دباح على archive.org (اسم الملف الحقيقي لكل سورة) ────────────
+DABBAH_ARCHIVE_ID = "20240321_20240321_1640"
+DABBAH_FILES = {
+    1:  "001  1  القارئ سعيد دباح الجزائري - سورة الفاتحة  - جودة عالية.mp3",
+    2:  "002  2  سورة البقرة كاملة بصوت سعيد دباح الجزائري.mp3",
+    3:  "003  3  القارئ سعيد دباح - تلاوة من سورة ال عمران - تراويح رمضان 2018.mp3",
+    4:  "004  4  سعيد دباح - تلاوة من سورة النساء - تراويح 2018 بجودة عالية.mp3",
+    5:  "005  5  القارئ سعيد دباح ماتيسر من سورة المائد ة.mp3",
+    6:  "006  6  القارئ سعيد دباح ماتيسر من سورة الانعام  said debbah.mp3",
+    7:  "007  7  القارئ سعيد دباح  تلاوة من سورة الأعراف - تراويح رمضان جودة عالية 2018.mp3",
+    8:  "008  8  القارئ سعيد دباح  تلاوة من سورة الأنفال - تراويح رمضان 2018 - جودة عالية.mp3",
+    9:  "009  9  القارئ سعيد دباح  سورة التوبة - ( تسجيلات جديدة - جودة عالية ) حصريا على قناتنا 2018.mp3",
+    10: "010  10  القارئ سعيد دباح  تلاوة من سورة يونس - جودة عالية.mp3",
+    11: "011  11  سورة هود بجودة عالية للقارئ الجزائري سعيد دباح.mp3",
+    12: "012  12  سعيد دباح  سورة يوسف.mp3",
+    13: "013  13  القارئ سعيد دباح سورة الرعد كاملة تلآوة رائعة.mp3",
+    16: "016    16  تلاوة خاشعة للقارئ سعيد دباح من سورة النحل.mp3",
+    18: "018   18  القارئ سعيد دباح سورة الكهف كاملة.mp3",
+    19: "019   19  سعيد دباح  سورة مريم كاملة   اشترك بالقناة.mp3",
+    20: "020    20  القارئ سعيد دباح  تلاوة من سورة طه - جودة عالية.mp3",
+    21: "021   21  من أروع مارتل سعيد دباح الجزائري من سورة الانبياء.mp3",
+    22: "022   22  القارئ سعيد دباح  سورة الحج - جودة عالية 2018.mp3",
+}
+
 ALGERIAN_RECITERS = [
     {
         "key": "dabbah",
         "name": "الشيخ سعيد دباح الجزائري",
         "riwaya": "حفص عن عاصم",
-        "source": "way2quran",
-        "slug": "said-dabbah",
-        # السور المتاحة عند سعيد دباح (41 سورة)
-        "surahs": [
-            1, 3, 12, 19, 25, 31, 32, 35, 49, 50,
-            53, 55, 56, 63, 64, 65, 67, 69, 76, 78,
-            80, 87, 89, 93, 94, 95, 96, 97, 98, 99,
-            100, 101, 102, 103, 104, 105, 106, 107,
-            108, 109, 110, 111, 112, 113, 114,
-        ],
+        "source": "archive",
+        # السور المتاحة: الأرقام مأخوذة من DABBAH_FILES
+        "surahs": sorted(DABBAH_FILES.keys()),
     },
     {
         "key": "yaseen",
@@ -139,6 +160,154 @@ ALGERIAN_RECITERS = [
     },
 ]
 
+# ══════════════════════════════════════════════════════════════════
+#  بنك أسئلة المسابقة الإسلامية — بالدارجة العاصمية
+# ══════════════════════════════════════════════════════════════════
+QUIZ_QUESTIONS = [
+    {
+        "id": 1,
+        "q": "🧠 *سؤال إسلامي:*\nشكون هو أول نبي بعثو ربّنا سبحانه وتعالى؟",
+        "opts": ["سيدنا نوح", "سيدنا آدم عليه السلام", "سيدنا إبراهيم", "سيدنا محمد ﷺ"],
+        "ans": 1,
+        "expl": "آدم عليه السلام هو أبو البشر وأول الأنبياء."
+    },
+    {
+        "id": 2,
+        "q": "🧠 *سؤال إسلامي:*\nقداش عدد السور اللي فيها القرآن الكريم؟",
+        "opts": ["100 سورة", "110 سور", "114 سورة", "120 سورة"],
+        "ans": 2,
+        "expl": "القرآن الكريم فيه 114 سورة."
+    },
+    {
+        "id": 3,
+        "q": "🧠 *سؤال إسلامي:*\nفاش فُرضت الصلاة على المسلمين؟",
+        "opts": ["في غزوة بدر", "في ليلة المعراج", "في أول يوم من رمضان", "في حجة الوداع"],
+        "ans": 1,
+        "expl": "فُرضت الصلاة في ليلة المعراج قبل الهجرة."
+    },
+    {
+        "id": 4,
+        "q": "🧠 *سؤال إسلامي:*\nشكون هو الصحابي اللي لقّبو رسول الله بـ \"الصديق\"؟",
+        "opts": ["سيدنا عمر بن الخطاب", "سيدنا عثمان بن عفان", "سيدنا علي بن أبي طالب", "سيدنا أبو بكر الصديق"],
+        "ans": 3,
+        "expl": "سيدنا أبو بكر لقّبو النبي ﷺ بالصديق لأنو صدّقو في كل شيء."
+    },
+    {
+        "id": 5,
+        "q": "🧠 *سؤال إسلامي:*\nأيّ سورة تُسمّى \"أمّ الكتاب\" وتُقرأ في كل ركعة؟",
+        "opts": ["سورة الإخلاص", "سورة الفاتحة", "سورة البقرة", "سورة يس"],
+        "ans": 1,
+        "expl": "سورة الفاتحة هي أم الكتاب وركن أساسي في كل ركعة."
+    },
+    {
+        "id": 6,
+        "q": "🧠 *سؤال إسلامي:*\nشكون اللي بنى الكعبة المشرّفة مع ولدو؟",
+        "opts": ["سيدنا نوح وسام", "سيدنا إبراهيم وإسماعيل", "سيدنا موسى وهارون", "سيدنا داوود وسليمان"],
+        "ans": 1,
+        "expl": "سيدنا إبراهيم وابنو إسماعيل عليهم السلام بنيوا الكعبة المشرفة."
+    },
+    {
+        "id": 7,
+        "q": "🧠 *سؤال إسلامي:*\nأيّ سورة تُسمّى \"قلب القرآن\"؟",
+        "opts": ["سورة البقرة", "سورة الكهف", "سورة يس", "سورة الرحمن"],
+        "ans": 2,
+        "expl": "سورة يس تُسمّى قلب القرآن كما جاء في الحديث الشريف."
+    },
+    {
+        "id": 8,
+        "q": "🧠 *سؤال إسلامي:*\nشكون هو الملاك المكلّف بإيصال الوحي للأنبياء؟",
+        "opts": ["ميكائيل", "إسرافيل", "جبريل عليه السلام", "عزرائيل"],
+        "ans": 2,
+        "expl": "جبريل عليه السلام هو الملاك الأمين المكلّف بالوحي."
+    },
+    {
+        "id": 9,
+        "q": "🧠 *سؤال إسلامي:*\nكم سنة دامت الدعوة في مكة قبل الهجرة للمدينة؟",
+        "opts": ["5 سنوات", "10 سنوات", "13 سنة", "20 سنة"],
+        "ans": 2,
+        "expl": "دامت الدعوة في مكة 13 سنة قبل الهجرة."
+    },
+    {
+        "id": 10,
+        "q": "🧠 *سؤال إسلامي:*\nأيّ آية تُسمّى \"سيّدة آيات القرآن\"؟",
+        "opts": ["أول آية من الفاتحة", "آية الكرسي", "آخر آية من البقرة", "آية المداينة"],
+        "ans": 1,
+        "expl": "آية الكرسي هي سيدة آيات القرآن كما أخبر النبي ﷺ."
+    },
+    {
+        "id": 11,
+        "q": "🧠 *سؤال إسلامي:*\nفاش كان عمر النبي ﷺ وقتاش بدا يجيه الوحي؟",
+        "opts": ["30 سنة", "35 سنة", "40 سنة", "45 سنة"],
+        "ans": 2,
+        "expl": "النبي ﷺ عندو 40 سنة بدا يجيه الوحي في غار حراء."
+    },
+    {
+        "id": 12,
+        "q": "🧠 *سؤال إسلامي:*\nشكون هي أول شهيدة في الإسلام؟",
+        "opts": ["السيدة خديجة", "السيدة فاطمة", "سمية بنت خياط", "أسماء بنت أبي بكر"],
+        "ans": 2,
+        "expl": "سمية بنت خياط رضي الله عنها هي أول شهيدة في الإسلام."
+    },
+    {
+        "id": 13,
+        "q": "🧠 *سؤال إسلامي:*\nكم ركعة فصلاة الظهر؟",
+        "opts": ["2 ركعات", "3 ركعات", "4 ركعات", "6 ركعات"],
+        "ans": 2,
+        "expl": "صلاة الظهر 4 ركعات."
+    },
+    {
+        "id": 14,
+        "q": "🧠 *سؤال إسلامي:*\nكم عدد أركان الإسلام؟",
+        "opts": ["3 أركان", "4 أركان", "5 أركان", "6 أركان"],
+        "ans": 2,
+        "expl": "أركان الإسلام خمسة: الشهادتان، الصلاة، الزكاة، الصيام، الحج."
+    },
+    {
+        "id": 15,
+        "q": "🧠 *سؤال إسلامي:*\nأيّ سورة تُقرأ يوم الجمعة وتنوّر صاحبها من الجمعة للجمعة؟",
+        "opts": ["سورة الملك", "سورة يس", "سورة الكهف", "سورة الواقعة"],
+        "ans": 2,
+        "expl": "سورة الكهف من قرأها يوم الجمعة أضاءت له نور من الجمعة للجمعة."
+    },
+    {
+        "id": 16,
+        "q": "🧠 *سؤال إسلامي:*\nفاين وُلد النبي محمد ﷺ؟",
+        "opts": ["المدينة المنورة", "مكة المكرمة", "الطائف", "القدس"],
+        "ans": 1,
+        "expl": "النبي ﷺ وُلد في مكة المكرمة عام الفيل."
+    },
+    {
+        "id": 17,
+        "q": "🧠 *سؤال إسلامي:*\nشكون هو الجزائري اللي اشتهر بتلاوة القرآن بالرواية الورشية؟",
+        "opts": ["الشيخ زكريا حمامة", "الشيخ ياسين الجزائري", "الشيخ سعيد دباح", "الشيخ منصور الوهراني"],
+        "ans": 1,
+        "expl": "الشيخ ياسين الجزائري معروف بتلاوته الرائعة بالرواية الورشية."
+    },
+    {
+        "id": 18,
+        "q": "🧠 *سؤال إسلامي:*\nكم آية في سورة الفاتحة؟",
+        "opts": ["5 آيات", "6 آيات", "7 آيات", "8 آيات"],
+        "ans": 2,
+        "expl": "سورة الفاتحة فيها 7 آيات."
+    },
+    {
+        "id": 19,
+        "q": "🧠 *سؤال إسلامي:*\nشكون هو أطول سورة في القرآن الكريم؟",
+        "opts": ["سورة آل عمران", "سورة البقرة", "سورة النساء", "سورة المائدة"],
+        "ans": 1,
+        "expl": "سورة البقرة هي أطول سورة في القرآن الكريم."
+    },
+    {
+        "id": 20,
+        "q": "🧠 *سؤال إسلامي:*\nفاش تصوم رمضان، قداش عدد أيامه في الغالب؟",
+        "opts": ["28 يوم", "29 أو 30 يوم", "31 يوم", "27 يوم"],
+        "ans": 1,
+        "expl": "رمضان إما 29 أو 30 يوم حسب رؤية الهلال."
+    },
+]
+
+QUIZ_BY_ID = {q["id"]: q for q in QUIZ_QUESTIONS}
+
 RECITERS_PAGE_SIZE = 5   # قراء في كل صفحة
 SURAHS_PAGE_SIZE  = 20  # سور في كل صفحة
 
@@ -150,8 +319,12 @@ def build_audio_url(reciter: dict, surah_num: int, assabile_rec_id: str | None =
     num = surah_num
     if src == "mp3quran":
         return f"{reciter['server']}/{num:03d}.mp3"
-    if src == "way2quran":
-        return f"https://media.way2quran.com/audios/{reciter['slug']}/{num:03d}.mp3"
+    if src == "archive":
+        filename = DABBAH_FILES.get(surah_num, "")
+        if not filename:
+            return ""
+        encoded = quote(filename, safe="")
+        return f"https://archive.org/download/{DABBAH_ARCHIVE_ID}/{encoded}"
     if src == "assabile" and assabile_rec_id:
         slug = reciter["slug"]
         pid  = reciter["person_id"]
@@ -239,7 +412,7 @@ ALGERIA_STATES = {
 MAIN_KEYBOARD = [
     [KeyboardButton("🕌 مواقيت الصلاة"), KeyboardButton("📖 تصفح القرآن الكريم")],
     [KeyboardButton("📍 أقرب مسجد / حلال / مقهى", request_location=True)],
-    [KeyboardButton("ℹ️ حول البوت")]
+    [KeyboardButton("🧠 مسابقة إسلامية"), KeyboardButton("ℹ️ حول البوت")]
 ]
 
 # ── المحتوى اليومي ───────────────────────────────────────────────────────────
@@ -264,16 +437,38 @@ DUA_SADAQA = (
 # ══════════════════════════════════════════════════════════════════
 #  بداية البوت
 # ══════════════════════════════════════════════════════════════════
+def _register_quiz_user(user, chat_id: int):
+    """يسجّل المستخدم في المسابقة التلقائية عند أول تواصل."""
+    db["quiz"].add(chat_id)
+    if chat_id not in db["quiz_scores"]:
+        db["quiz_scores"][chat_id] = {
+            "name":    (user.first_name or "مجهول")[:30],
+            "correct": 0,
+            "total":   0,
+        }
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user    = update.effective_user
+    chat_id = update.effective_chat.id
+    _register_quiz_user(user, chat_id)
+
     await update.message.reply_text(
-        "👋 مرحباً بك في البوت الإسلامي الجزائري.\n\n"
-        "💡 الميزات المتاحة:\n"
-        "• 🕌 مواقيت الصلاة لـ 48 ولاية جزائرية.\n"
-        "• 📢 تفعيل الأذان التلقائي: `/alarm اسم_الولاية`\n"
-        "• 📖 تصفح القرآن والاستماع بصوت قراء جزائريين.\n"
-        "• 📍 إرسال موقعك لمعرفة أقرب مسجد ومحل ومقهى.\n"
-        "• 🕒 إرسال تلقائي للأذكار والمحتوى اليومي: `/auto`\n"
-        "• 🔕 إيقاف جميع التنبيهات: `/stop`",
+        f"واش راك يا {user.first_name}؟ 👋\n"
+        "مرحبا بيك في *البوت الإسلامي الدزايري* 🇩🇿\n\n"
+        "💡 *واش يقدر يعمل البوت هادا:*\n\n"
+        "🕌 مواقيت الصلاة لـ 48 ولاية دزايرية\n"
+        "📖 تصفح القرآن واسمع بصوت قراء دزايريين\n"
+        "📍 ارسل موقعك باش تعرف أقرب مسجد ومحل حلال\n"
+        "🧠 مسابقة إسلامية كل ساعتين — *مسجّل تلقائياً* ✅\n"
+        "🏆 قايمة الأوائل تنضرب كل خميس ليلاً\n"
+        "🕒 أذكار الصباح والمساء والمحتوى اليومي\n\n"
+        "🔧 *الأوامر المتاحة:*\n"
+        "• `/alarm اسم_الولاية` — تفعيل تنبيه الأذان\n"
+        "• `/auto` — تفعيل الأذكار والمحتوى اليومي\n"
+        "• `/quiz` — شوف قايمة الأوائل الحالية\n"
+        "• `/stop` — إيقاف التنبيهات (المسابقة تبقى)\n\n"
+        "يرحم والديك 🤲 — حظّ سعيد في المسابقة! 🏅",
         reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
         parse_mode="Markdown"
     )
@@ -434,8 +629,14 @@ def get_reciter_surahs(reciter: dict) -> list[dict]:
 
     if reciter["source"] == "assabile":
         surahs = fetch_assabile_surahs(reciter)
+    elif reciter["source"] == "archive":
+        # سعيد دباح: السور المتاحة مخزّنة في DABBAH_FILES
+        surahs = [
+            {"sura_id": n, "name": SURAH_NAMES[n-1], "rec_id": ""}
+            for n in sorted(DABBAH_FILES.keys())
+        ]
     else:
-        # mp3quran أو way2quran: نبني القائمة من الأرقام المخزّنة
+        # mp3quran: نبني القائمة من الأرقام المخزّنة
         surahs = [
             {"sura_id": n, "name": SURAH_NAMES[n-1], "rec_id": ""}
             for n in reciter["surahs"]
@@ -649,6 +850,94 @@ async def send_dua_sadaqa(app):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  المسابقة الإسلامية
+# ══════════════════════════════════════════════════════════════════
+async def toggle_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /quiz — اشتراك أو إلغاء اشتراك في المسابقة."""
+    chat_id = update.effective_chat.id
+    if chat_id in db["quiz"]:
+        db["quiz"].discard(chat_id)
+        await update.message.reply_text(
+            "🔕 ولّيت ما تجيك المسابقة. إذا حبيت ترجع اكتب `/quiz`",
+            parse_mode="Markdown"
+        )
+    else:
+        db["quiz"].add(chat_id)
+        await update.message.reply_text(
+            "✅ تسجّلت في المسابقة الإسلامية! 🎉\n"
+            "راح تجيك أسئلة كل ساعتين بالدارجة الدزايرية.\n"
+            "باش توقّف اكتب `/quiz` مرة أخرى.",
+            parse_mode="Markdown"
+        )
+
+
+async def quiz_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """زر '🧠 مسابقة إسلامية' من لوحة المفاتيح — يرسل سؤالاً فورياً."""
+    await send_single_quiz(update.effective_chat.id, update.get_bot())
+
+
+async def send_quiz(app):
+    """جدولة: ترسل سؤالاً عشوائياً لكل المشتركين كل ساعتين."""
+    q = random.choice(QUIZ_QUESTIONS)
+    markup = _quiz_keyboard(q)
+    recipients = db["auto"] | db["quiz"]
+    for chat_id in list(recipients):
+        try:
+            await app.bot.send_message(
+                chat_id,
+                q["q"] + "\n\n_اختر الجواب الصحيح 👇_",
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+
+async def send_single_quiz(chat_id: int, bot):
+    """يرسل سؤالاً عشوائياً لشخص واحد (عند الضغط على الزر)."""
+    q = random.choice(QUIZ_QUESTIONS)
+    markup = _quiz_keyboard(q)
+    try:
+        await bot.send_message(
+            chat_id,
+            q["q"] + "\n\n_اختر الجواب الصحيح 👇_",
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"send_single_quiz error: {e}")
+
+
+def _quiz_keyboard(q: dict) -> InlineKeyboardMarkup:
+    rows = []
+    for i, opt in enumerate(q["opts"]):
+        rows.append([InlineKeyboardButton(
+            opt, callback_data=f"quiz|{q['id']}|{i}"
+        )])
+    return InlineKeyboardMarkup(rows)
+
+
+async def quiz_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    _, q_id_str, chosen_str = query.data.split("|")
+    q = QUIZ_BY_ID.get(int(q_id_str))
+    if not q:
+        await query.answer("❌ السؤال ما لقيناهوش.", show_alert=True)
+        return
+    chosen  = int(chosen_str)
+    correct = q["ans"]
+    if chosen == correct:
+        msg = f"✅ صحّ! إجابتك صحيحة 🎉\n\n📝 {q['expl']}"
+    else:
+        msg = (
+            f"❌ غلطت!\n"
+            f"الجواب الصحيح هو: *{q['opts'][correct]}*\n\n"
+            f"📝 {q['expl']}"
+        )
+    await query.answer(msg, show_alert=True)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  حول البوت
 # ══════════════════════════════════════════════════════════════════
 async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -676,19 +965,22 @@ def main():
     scheduler.add_job(send_daily_package,  CronTrigger(hour=8,  minute=0), args=[app])
     scheduler.add_job(send_massa_content,  CronTrigger(hour=17, minute=0), args=[app])
     scheduler.add_job(send_dua_sadaqa,     CronTrigger(hour=21, minute=0), args=[app])
+    scheduler.add_job(send_quiz,           "interval", hours=2,            args=[app])
     scheduler.start()
 
     # ── الأوامر ───────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alarm", set_alarm))
     app.add_handler(CommandHandler("auto",  start_auto_broadcast))
+    app.add_handler(CommandHandler("quiz",  toggle_quiz))
     app.add_handler(CommandHandler("stop",  stop_all_services))
 
     # ── الرسائل النصية ────────────────────────────────────────────
-    app.add_handler(MessageHandler(filters.Text(["🕌 مواقيت الصلاة"]),       prayer_menu))
-    app.add_handler(MessageHandler(filters.Text(["📖 تصفح القرآن الكريم"]), quran_menu))
-    app.add_handler(MessageHandler(filters.Text(["ℹ️ حول البوت"]),           about_bot))
-    app.add_handler(MessageHandler(filters.LOCATION,                          find_nearby_places))
+    app.add_handler(MessageHandler(filters.Text(["🕌 مواقيت الصلاة"]),        prayer_menu))
+    app.add_handler(MessageHandler(filters.Text(["📖 تصفح القرآن الكريم"]),  quran_menu))
+    app.add_handler(MessageHandler(filters.Text(["🧠 مسابقة إسلامية"]),      quiz_menu))
+    app.add_handler(MessageHandler(filters.Text(["ℹ️ حول البوت"]),            about_bot))
+    app.add_handler(MessageHandler(filters.LOCATION,                           find_nearby_places))
 
     # ── الأزرار التفاعلية ─────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(prayer_callback,       pattern=r"^pray\|"))
@@ -696,6 +988,7 @@ def main():
     app.add_handler(CallbackQueryHandler(reciter_callback,       pattern=r"^reciter\|"))
     app.add_handler(CallbackQueryHandler(surahs_page_callback,   pattern=r"^surahs_page\|"))
     app.add_handler(CallbackQueryHandler(surah_audio_callback,   pattern=r"^surah\|"))
+    app.add_handler(CallbackQueryHandler(quiz_answer_callback,   pattern=r"^quiz\|"))
     app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer(), pattern=r"^noop$"))
 
     app.run_polling()
