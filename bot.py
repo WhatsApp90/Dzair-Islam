@@ -972,10 +972,11 @@ def _quiz_keyboard(q: dict) -> InlineKeyboardMarkup:
 
 async def quiz_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
+    await query.answer()          # إيقاف أيقونة التحميل على الفور
     _, q_id_str, chosen_str = query.data.split("|")
     q = QUIZ_BY_ID.get(int(q_id_str))
     if not q:
-        await query.answer("❌ السؤال ما لقيناهوش.", show_alert=True)
+        await query.message.reply_text("❌ السؤال ما لقيناهوش.")
         return
     chosen  = int(chosen_str)
     correct = q["ans"]
@@ -992,15 +993,87 @@ async def quiz_answer_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     db["quiz_scores"][chat_id]["total"] += 1
     if chosen == correct:
         db["quiz_scores"][chat_id]["correct"] += 1
-        msg = f"✅ صحّ! إجابتك صحيحة 🎉\n\n📝 {q['expl']}"
+        verdict = "✅ *صحّ! إجابتك صحيحة* 🎉"
     else:
-        msg = (
-            f"❌ غلطت!\n"
-            f"الجواب الصحيح هو: *{q['opts'][correct]}*\n\n"
-            f"📝 {q['expl']}"
+        verdict = (
+            f"❌ *غلطت!*\n"
+            f"الجواب الصحيح هو: *{q['opts'][correct]}*"
         )
     save_db()
-    await query.answer(msg, show_alert=True)
+
+    # ── تعديل رسالة السؤال بالنتيجة (تبقى ظاهرة بدل ما تختفي) ────────
+    result_text = (
+        f"{q['q']}\n\n"
+        f"{verdict}\n\n"
+        f"📝 {q['expl']}"
+    )
+    try:
+        await query.message.edit_text(result_text, parse_mode="Markdown")
+    except Exception:
+        await query.message.reply_text(result_text, parse_mode="Markdown")
+
+
+# ══════════════════════════════════════════════════════════════════
+#  منشورات الحداد — حرائق الغابات الجزائرية (3 أيام)
+#  تاريخ البدء: 22 يوليو 2026
+# ══════════════════════════════════════════════════════════════════
+from datetime import date as _date
+
+MOURNING_START = _date(2026, 7, 22)   # أول يوم حداد
+MOURNING_DAYS  = 3                    # مدة الحداد
+
+MOURNING_POSTS = [
+    # اليوم الأول
+    (
+        "🇩🇿 *إنّا لله وإنّا إليه راجعون*\n\n"
+        "﴿وَبَشِّرِ الصَّابِرِينَ ۝ الَّذِينَ إِذَا أَصَابَتْهُم مُّصِيبَةٌ قَالُوا إِنَّا لِلَّهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ﴾\n\n"
+        "قلوبنا مع إخواننا في الولايات المتضرّرة من حرائق الغابات… "
+        "نشاركهم ألمهم ونحمل معهم همّهم.\n\n"
+        "🤲 اللهم اجعل هذه النار برداً وسلاماً على أهلنا، "
+        "وارحم شهداءنا، واشفِ جرحانا، وأعِد لهم ما فقدوه أضعافاً مضاعفة.\n\n"
+        "🕯 *يوم الحداد الأول — نحن معكم يا أهل الجزائر* 🇩🇿\n\n"
+        "_هذا البوت صدقة جارية يديره شباب جزائري يواسي إخوانه في المحن._"
+    ),
+    # اليوم الثاني
+    (
+        "🇩🇿 *تضامن — حرائق الغابات الجزائرية*\n\n"
+        "قال النبي ﷺ: «مَثَلُ المُؤمِنِينَ في تَوادِّهِم وتَراحُمِهِم وتَعاطُفِهِم، "
+        "مَثَلُ الجَسَدِ، إذا اشتَكى مِنهُ عُضوٌ تَداعى له سائرُ الجَسَدِ بالسَّهَرِ والحُمَّى»\n\n"
+        "أهلنا في الغابات يُجاهدون النار، ونحن نُجاهد معهم بالدعاء والتضامن.\n\n"
+        "🤲 اللهم أنزِل عليهم رحمتك، وكُن لهم عوناً وسنداً، "
+        "وارزقهم الصبر والثبات، وعوّضهم خيراً مما أُصيبوا به.\n\n"
+        "🕯 *يوم الحداد الثاني — الجزائر في قلوبنا* 🇩🇿\n\n"
+        "_هذا البوت صدقة جارية يديره شباب جزائري يواسي إخوانه في المحن._"
+    ),
+    # اليوم الثالث
+    (
+        "🇩🇿 *دعاء الختام — ثالث أيام الحداد*\n\n"
+        "«اللهم إنَّا نسألك بأسمائك الحسنى وصفاتك العُلا أن تُطفئ هذه النيران، "
+        "وأن تُحيي ما أحرقته بنباتٍ وخير، "
+        "وأن تشفي جرحانا وترحم شهداءنا وتُعوّض المتضرّرين.»\n\n"
+        "ثلاثة أيام مرّت ونحن نحمل في قلوبنا جرح إخواننا… "
+        "الجزائر لا تُكسر، وشعبها لا يُهزم بإذن الله.\n\n"
+        "🌿 اللهم اجعل مكان الرماد خضرةً وحياة، "
+        "وأعِد لأهلنا أجمل مما فقدوا.\n\n"
+        "🕯 *يوم الحداد الثالث — وقفة وفاء لأرواح الشهداء* 🇩🇿\n\n"
+        "_هذا البوت صدقة جارية يديره شباب جزائري يواسي إخوانه في المحن._"
+    ),
+]
+
+
+async def send_mourning_post(app):
+    """ينشر منشور الحداد المناسب للمشتركين خلال 3 أيام."""
+    today     = _date.today()
+    day_index = (today - MOURNING_START).days
+    if day_index < 0 or day_index >= MOURNING_DAYS:
+        return                   # خارج فترة الحداد
+    text       = MOURNING_POSTS[day_index]
+    recipients = db["auto"] | db["quiz"]
+    for chat_id in list(recipients):
+        try:
+            await app.bot.send_message(chat_id, text, parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1070,6 +1143,8 @@ def main():
     scheduler.add_job(send_quiz,               "interval", hours=2,                               args=[app])
     # لوحة الأوائل كل خميس الساعة 21:00
     scheduler.add_job(send_weekly_leaderboard, CronTrigger(day_of_week="thu", hour=21, minute=0), args=[app])
+    # منشورات الحداد — يُرسَل يومياً الساعة 10:00 صباحاً (3 أيام فقط)
+    scheduler.add_job(send_mourning_post,      CronTrigger(hour=10, minute=0),                   args=[app])
     scheduler.start()
 
     # ── الأوامر ───────────────────────────────────────────────────
