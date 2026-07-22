@@ -449,7 +449,12 @@ ALGERIA_STATES = {
     "46- عين تيموشنت":   (35.30, -1.14),
     "47- غرداية":        (32.49,  3.67),
     "48- غليزان":        (35.97,  0.57),
+    # ── اليمن ──────────────────────────────────────────────────────
+    "🇾🇪 حضرموت":       (15.49, 49.12),
 }
+
+STATES_LIST = list(ALGERIA_STATES.keys())   # قائمة مرتّبة للترقيم
+STATES_PAGE_SIZE = 10                        # ولايات لكل صفحة
 
 # ── لوحة المفاتيح الرئيسية ───────────────────────────────────────────────────
 MAIN_KEYBOARD = [
@@ -480,39 +485,48 @@ DUA_SADAQA = (
 # ══════════════════════════════════════════════════════════════════
 #  بداية البوت
 # ══════════════════════════════════════════════════════════════════
-def _register_quiz_user(user, chat_id: int):
-    """يسجّل المستخدم في المسابقة التلقائية عند أول تواصل."""
-    db["quiz"].add(chat_id)
+def _register_user(user, chat_id: int):
+    """يسجّل المستخدم تلقائياً في كل خدمات البوت عند أول تواصل."""
+    changed = False
+    # الأذكار والمحتوى اليومي
+    if chat_id not in db["auto"]:
+        db["auto"].add(chat_id)
+        changed = True
+    # المسابقة
+    if chat_id not in db["quiz"]:
+        db["quiz"].add(chat_id)
+        changed = True
+    # سجل النقاط
     if chat_id not in db["quiz_scores"]:
         db["quiz_scores"][chat_id] = {
             "name":    (user.first_name or "مجهول")[:30],
             "correct": 0,
             "total":   0,
         }
+        changed = True
+    if changed:
         save_db()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user    = update.effective_user
     chat_id = update.effective_chat.id
-    _register_quiz_user(user, chat_id)
+    _register_user(user, chat_id)
 
     await update.message.reply_text(
-        f"واش راك يا {user.first_name}؟ 👋\n"
-        "مرحبا بيك في *البوت الإسلامي الدزايري* 🇩🇿\n\n"
-        "💡 *واش يقدر يعمل البوت هادا:*\n\n"
-        "🕌 مواقيت الصلاة لـ 48 ولاية دزايرية\n"
-        "📖 تصفح القرآن واسمع بصوت قراء دزايريين\n"
-        "📍 ارسل موقعك باش تعرف أقرب مسجد ومحل حلال\n"
-        "🧠 مسابقة إسلامية كل ساعتين — *مسجّل تلقائياً* ✅\n"
-        "🏆 لوحة الأوائل كل خميس ليلاً — المتصدّر يحظى بتكريم خاص 🎖\n"
-        "🕒 أذكار الصباح والمساء والمحتوى اليومي\n\n"
-        "🔧 *الأوامر المتاحة:*\n"
-        "• `/alarm اسم_الولاية` — تفعيل تنبيه الأذان\n"
-        "• `/auto` — تفعيل الأذكار والمحتوى اليومي\n"
-        "• `/quiz` — شوف لوحة الأوائل\n"
-        "• `/stop` — إيقاف التنبيهات (المسابقة تبقى)\n\n"
-        "يرحم والديك 🤲 — حظّ سعيد في المسابقة! 🏅",
+        f"بسم الله، مرحباً بك يا *{user.first_name}* 👋\n"
+        "في *البوت الإسلامي الجزائري* 🇩🇿\n\n"
+        "✅ *تم تسجيلك تلقائياً في جميع الخدمات:*\n\n"
+        "🕌 مواقيت الصلاة + تنبيه الأذان _(اختر ولايتك من القائمة)_\n"
+        "📖 تصفح القرآن بأصوات قراء جزائريين\n"
+        "📍 أقرب مسجد / محل حلال / مقهى _(أرسل موقعك)_\n"
+        "🧠 مسابقة إسلامية كل ساعتين بالدارجة\n"
+        "🏆 لوحة الأوائل كل خميس ليلاً — المتصدّر يُكرَّم 🎖\n"
+        "☀️ أذكار الصباح والمساء والمحتوى اليومي\n\n"
+        "📌 *الأوامر المتاحة:*\n"
+        "• `/quiz` — لوحة الأوائل\n"
+        "• `/stop` — إيقاف التنبيهات _(المسابقة تبقى)_\n\n"
+        "يرحم والديك 🤲 — حظاً موفقاً في المسابقة! 🏅",
         reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
         parse_mode="Markdown"
     )
@@ -534,52 +548,105 @@ def get_prayer_times(lat: float, lon: float) -> dict | None:
         return None
 
 
+PRAYER_NAMES = {
+    "Fajr": "الفجر", "Dhuhr": "الظهر",
+    "Asr": "العصر", "Maghrib": "المغرب", "Isha": "العشاء",
+}
+
+
+def _states_page_keyboard(page: int) -> InlineKeyboardMarkup:
+    """لوحة الولايات مع ترقيم الصفحات — 10 ولايات في كل صفحة."""
+    start  = page * STATES_PAGE_SIZE
+    end    = start + STATES_PAGE_SIZE
+    chunk  = STATES_LIST[start:end]
+    total  = (len(STATES_LIST) + STATES_PAGE_SIZE - 1) // STATES_PAGE_SIZE
+
+    rows = []
+    # زرّان في كل صف
+    for i in range(0, len(chunk), 2):
+        row = []
+        for state in chunk[i:i+2]:
+            row.append(InlineKeyboardButton(state, callback_data=f"pray|{state}"))
+        rows.append(row)
+
+    # أزرار التنقل
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"pray_page|{page-1}"))
+    nav.append(InlineKeyboardButton(f"📄 {page+1}/{total}", callback_data="noop"))
+    if end < len(STATES_LIST):
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"pray_page|{page+1}"))
+    rows.append(nav)
+    return InlineKeyboardMarkup(rows)
+
+
 async def prayer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(state, callback_data=f"pray|{state}")]
-        for state in ALGERIA_STATES.keys()
-    ]
     await update.message.reply_text(
-        "📌 اختر ولايتك لعرض مواقيت الصلاة الحالية:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "📌 *اختر ولايتك* لعرض مواقيت الصلاة وتفعيل تنبيه الأذان تلقائياً:",
+        reply_markup=_states_page_keyboard(0),
+        parse_mode="Markdown"
     )
 
 
-async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def prayer_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """التنقل بين صفحات الولايات."""
     query = update.callback_query
     await query.answer()
+    page = int(query.data.split("|")[1])
+    await query.edit_message_reply_markup(_states_page_keyboard(page))
+
+
+async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض مواقيت الصلاة + حفظ الولاية تلقائياً كتنبيه أذان."""
+    query   = update.callback_query
+    await query.answer()
+    chat_id    = query.message.chat_id
     state_name = query.data.split("|", 1)[1]
-    lat, lon = ALGERIA_STATES[state_name]
+    lat, lon   = ALGERIA_STATES[state_name]
+
+    # ── حفظ الولاية تلقائياً كتنبيه أذان ──────────────────────────
+    if db["alarms"].get(chat_id) != state_name:
+        db["alarms"][chat_id] = state_name
+        save_db()
+
     times = get_prayer_times(lat, lon)
     if times:
         text = (
-            f"🕌 مواقيت الصلاة في ولاية ({state_name})\n"
+            f"🕌 *مواقيت الصلاة — {state_name}*\n"
             f"📅 {datetime.now().strftime('%Y-%m-%d')}\n\n"
-            f"🌅 الفجر:   {times['Fajr']}\n"
-            f"☀️ الشروق: {times['Sunrise']}\n"
-            f"🕌 الظهر:   {times['Dhuhr']}\n"
-            f"🌆 العصر:   {times['Asr']}\n"
-            f"🌅 المغرب:  {times['Maghrib']}\n"
-            f"🌃 العشاء:  {times['Isha']}"
+            f"🌅 الفجر:    {times['Fajr']}\n"
+            f"☀️ الشروق:  {times['Sunrise']}\n"
+            f"🕌 الظهر:    {times['Dhuhr']}\n"
+            f"🌆 العصر:    {times['Asr']}\n"
+            f"🌅 المغرب:   {times['Maghrib']}\n"
+            f"🌃 العشاء:   {times['Isha']}\n\n"
+            f"🔔 _تم تفعيل تنبيه الأذان لولايتك تلقائياً_ ✅"
         )
-        await query.edit_message_text(text)
+        back_btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 العودة للولايات", callback_data="pray_page|0")
+        ]])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_btn)
     else:
-        await query.edit_message_text("❌ عذراً، تعذر جلب المواقيت حالياً.")
+        await query.edit_message_text("❌ عذراً، تعذّر جلب المواقيت حالياً.")
 
 
 async def check_prayer_alarms(app):
     now_str = datetime.now().strftime("%H:%M")
     for chat_id, state in list(db["alarms"].items()):
-        lat, lon = ALGERIA_STATES.get(state, (36.75, 3.05))
+        coords = ALGERIA_STATES.get(state, (36.75, 3.05))
+        lat, lon = coords
         times = get_prayer_times(lat, lon)
         if times:
-            for prayer, p_time in times.items():
-                if prayer in ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"] and p_time == now_str:
+            for prayer_en, p_time in times.items():
+                if prayer_en in PRAYER_NAMES and p_time == now_str:
+                    prayer_ar = PRAYER_NAMES[prayer_en]
                     try:
                         await app.bot.send_message(
                             chat_id,
-                            f"🕌 حان الآن موعد آذان صلاة *{prayer}* "
-                            f"حسب توقيت ولاية {state} 🇩🇿",
+                            f"🕌 *حان وقت صلاة {prayer_ar}*\n"
+                            f"📍 توقيت: {state}\n"
+                            f"🕐 الساعة: {p_time}\n\n"
+                            "اللهم اجعلنا من المحافظين على الصلوات 🤲",
                             parse_mode="Markdown"
                         )
                     except Exception:
@@ -1162,7 +1229,8 @@ def main():
     app.add_handler(MessageHandler(filters.LOCATION,                           find_nearby_places))
 
     # ── الأزرار التفاعلية ─────────────────────────────────────────
-    app.add_handler(CallbackQueryHandler(prayer_callback,       pattern=r"^pray\|"))
+    app.add_handler(CallbackQueryHandler(prayer_page_callback,   pattern=r"^pray_page\|"))
+    app.add_handler(CallbackQueryHandler(prayer_callback,        pattern=r"^pray\|"))
     app.add_handler(CallbackQueryHandler(reciters_page_callback, pattern=r"^reciters_page\|"))
     app.add_handler(CallbackQueryHandler(reciter_callback,       pattern=r"^reciter\|"))
     app.add_handler(CallbackQueryHandler(surahs_page_callback,   pattern=r"^surahs_page\|"))
