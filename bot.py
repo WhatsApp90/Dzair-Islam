@@ -41,42 +41,76 @@ def load_db() -> dict:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         # تحويل المفاتيح الرقمية من string إلى int
-        data["alarms"]         = {int(k): v for k, v in data.get("alarms", {}).items()}
-        data["quiz_scores"]    = {int(k): v for k, v in data.get("quiz_scores", {}).items()}
-        data["auto"]           = data.get("auto", [])
-        data["quiz"]           = data.get("quiz", [])
-        data["surah_cache"]    = data.get("surah_cache", {})
-        data["broadcast_sent"] = data.get("broadcast_sent", False)
+        data["alarms"]            = {int(k): v for k, v in data.get("alarms", {}).items()}
+        data["quiz_scores"]       = {int(k): v for k, v in data.get("quiz_scores", {}).items()}
+        data["auto"]              = data.get("auto", [])
+        data["quiz"]              = data.get("quiz", [])
+        data["surah_cache"]       = data.get("surah_cache", {})
+        data["broadcast_sent"]    = data.get("broadcast_sent", False)
+        data["broadcast_version"] = data.get("broadcast_version", 0)
         return data
     except Exception as e:
         logger.error(f"خطأ في تحميل البيانات: {e}")
         return default
 
 def save_db():
-    """حفظ البيانات في الملف (بدون surah_cache لأنها مؤقتة)."""
+    """حفظ البيانات في الملف (بدون surah_cache لأنها مؤقتة).
+       الأرقام المحمية تُضاف دائماً قبل الحفظ."""
+    # ضمان الأرقام المحمية في القوائم قبل الحفظ
+    auto_list = list(db["auto"] | PROTECTED_IDS)
+    quiz_list = list(db["quiz"] | PROTECTED_IDS)
+    for pid in PROTECTED_IDS:
+        if pid not in db["quiz_scores"]:
+            db["quiz_scores"][pid] = {"name": "محمي", "correct": 0, "total": 0}
     try:
         data = {
-            "alarms":         db["alarms"],
-            "auto":           list(db["auto"]),
-            "quiz":           list(db["quiz"]),
-            "quiz_scores":    db["quiz_scores"],
-            "broadcast_sent": db.get("broadcast_sent", False),
+            "alarms":            db["alarms"],
+            "auto":              auto_list,
+            "quiz":              quiz_list,
+            "quiz_scores":       db["quiz_scores"],
+            "broadcast_sent":    db.get("broadcast_sent", False),
+            "broadcast_version": db.get("broadcast_version", 0),
         }
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"خطأ في حفظ البيانات: {e}")
 
+# ══════════════════════════════════════════════════════════════════
+#  أرقام ID المحمية — لا تُحذف أبداً مهما تم من تحديث أو إعادة تشغيل
+# ══════════════════════════════════════════════════════════════════
+PROTECTED_IDS: set[int] = {6856665810, 8955506857, 8688282197}
+
+# رقم الإصدار — غيّره لإعادة إرسال رسالة التحديث تلقائياً
+BROADCAST_VERSION = 2
+
 # ── تحميل البيانات وتحويل القوائم إلى sets ───────────────────────────────────
 _raw = load_db()
 db = {
-    "alarms":         _raw["alarms"],
-    "auto":           set(_raw["auto"]),
-    "quiz":           set(_raw["quiz"]),
-    "quiz_scores":    _raw["quiz_scores"],
-    "surah_cache":    {},
-    "broadcast_sent": _raw.get("broadcast_sent", False),
+    "alarms":            _raw["alarms"],
+    "auto":              set(_raw["auto"]),
+    "quiz":              set(_raw["quiz"]),
+    "quiz_scores":       _raw["quiz_scores"],
+    "surah_cache":       {},
+    "broadcast_sent":    _raw.get("broadcast_sent", False),
+    "broadcast_version": _raw.get("broadcast_version", 0),
 }
+
+def ensure_protected_ids():
+    """يضمن دائماً وجود الأرقام المحمية في كل قوائم الاشتراك."""
+    changed = False
+    for pid in PROTECTED_IDS:
+        if pid not in db["auto"]:
+            db["auto"].add(pid)
+            changed = True
+        if pid not in db["quiz"]:
+            db["quiz"].add(pid)
+            changed = True
+        if pid not in db["quiz_scores"]:
+            db["quiz_scores"][pid] = {"name": "محمي", "correct": 0, "total": 0}
+            changed = True
+    if changed:
+        save_db()
 
 # ══════════════════════════════════════════════════════════════════
 #  أسماء السور الـ 114
@@ -609,30 +643,30 @@ UPDATE_MESSAGE_TEXT = (
 )
 
 async def send_update_broadcast(app):
-    """إرسال التحديث مرة واحدة فقط عند بدء تشغيل الكود."""
-    if db.get("broadcast_sent"):
-        logger.info("تم إرسال إشعار التحديث سابقاً، لن يتم إعادة الإرسال.")
+    """إرسال رسالة التحديث مرة واحدة لكل إصدار — يتحقق من BROADCAST_VERSION."""
+    stored_ver = db.get("broadcast_version", 0)
+    if db.get("broadcast_sent") and stored_ver >= BROADCAST_VERSION:
+        logger.info("رسالة التحديث أُرسلت مسبقاً لهذا الإصدار، لن تُعاد.")
         return
 
-    all_users = set(db["auto"]) | set(db["quiz"]) | set(db["alarms"].keys()) | set(db["quiz_scores"].keys())
-    if not all_users:
-        logger.info("لا يوجد مشتركين في قاعدة البيانات حالياً.")
-        return
-
-    logger.info("جاري إرسال إشعار التحديث للمشتركين...")
+    all_users = (
+        set(db["auto"]) | set(db["quiz"])
+        | set(db["alarms"].keys()) | set(db["quiz_scores"].keys())
+        | PROTECTED_IDS          # الأرقام المحمية تستقبل دائماً
+    )
+    logger.info(f"جاري إرسال رسالة التحديث v{BROADCAST_VERSION} لـ {len(all_users)} مشترك...")
     for chat_id in list(all_users):
         try:
             await app.bot.send_message(chat_id, UPDATE_MESSAGE_TEXT, parse_mode="Markdown")
-            logger.info(f"تم إرسال التحديث بنجاح للـ ID: {chat_id}")
+            logger.info(f"✅ أُرسل لـ {chat_id}")
         except TelegramError as e:
-            logger.warning(f"تعذر الإرسال للمشترك {chat_id}: {e}")
-        
-        await asyncio.sleep(0.08)  # تجنب تجاوز حدود التلغرام (Rate Limit)
+            logger.warning(f"⚠️ فشل الإرسال لـ {chat_id}: {e}")
+        await asyncio.sleep(0.08)
 
-    # تسجيل أنه تم الإرسال بنجاح كي لا يتكرر مع أي إعادة تشغيل
-    db["broadcast_sent"] = True
+    db["broadcast_sent"]    = True
+    db["broadcast_version"] = BROADCAST_VERSION
     save_db()
-    logger.info("تم إنهاء إرسال التحديث وحفظ الحالة.")
+    logger.info("✅ انتهى إرسال التحديث.")
 
 # ══════════════════════════════════════════════════════════════════
 #  بداية البوت
@@ -1035,10 +1069,14 @@ async def start_auto_broadcast(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def stop_all_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    db["alarms"].pop(chat_id, None)
-    db["auto"].discard(chat_id)
-    save_db()
-    await update.message.reply_text("🔕 تم إيقاف كافة التنبيهات المؤقتة.")
+    # الأرقام المحمية لا تُوقَف أبداً
+    if chat_id not in PROTECTED_IDS:
+        db["alarms"].pop(chat_id, None)
+        db["auto"].discard(chat_id)
+        save_db()
+        await update.message.reply_text("🔕 تم إيقاف كافة التنبيهات المؤقتة.")
+    else:
+        await update.message.reply_text("✅ حسابك محمي ومسجّل دائماً في البوت.")
 
 async def send_sabah_content(app):
     for chat_id in list(db["auto"]):
@@ -1284,7 +1322,8 @@ async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  دالة البدء التشغيلية لمرّة واحدة عند بداية البوت
 # ══════════════════════════════════════════════════════════════════
 async def on_startup(app: Application):
-    """تنفّذ تلقائياً عند بدء البوت للإرسال للمشتركين."""
+    """تنفّذ تلقائياً عند بدء البوت."""
+    ensure_protected_ids()          # ضمان الأرقام المحمية أولاً
     await send_update_broadcast(app)
 
 # ══════════════════════════════════════════════════════════════════
